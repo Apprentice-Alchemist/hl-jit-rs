@@ -1,0 +1,11 @@
+[package]
+name = "hl-jit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cranelift = { version = "0.115.0", features = ["native"] }
+target-lexicon = "0.12.0"
+
+[build-dependencies]
+bindgen = "0.71.1"
