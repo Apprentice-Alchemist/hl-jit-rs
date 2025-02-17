@@ -1,1 +1,5 @@
 /target
+/dump
+/out
+Main.hx
+*.hl
