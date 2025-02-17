@@ -1,3 +1,5 @@
+use std::ops::Index;
+#[allow(unused)]
 use std::{
     fs::File,
     io::{self, BufReader, ErrorKind, Read},
@@ -71,7 +73,7 @@ impl Reader {
 }
 
 fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
-    let size = dbg!(r.int()? as usize);
+    let size = r.int()? as usize;
     let mut buf = Vec::new();
     buf.resize(size, 0);
     r.0.read_exact(&mut buf)?;
@@ -82,7 +84,8 @@ fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
     println!("string count: {}", nstrings);
     for _ in 0..nstrings {
         let sz = r.udx()?;
-        let mut buf = vec![0u8; sz];
+        // include null terminator
+        let mut buf = vec![0u8; sz + 1];
         cursor.read_exact(&mut buf)?;
         let Ok(s) = String::from_utf8(buf) else {
             return Err(std::io::Error::new(
@@ -91,7 +94,6 @@ fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
             ));
         };
         string_vec.push(s);
-        cursor.read_exact(&mut [0u8; 1])?;
     }
 
     Ok(string_vec)
@@ -175,7 +177,41 @@ impl HLType {
             Self::Void => hl_type_kind_HVOID,
             Self::UInt8 => hl_type_kind_HUI8,
             Self::UInt16 => hl_type_kind_HUI16,
-            _ => todo!()
+            _ => todo!(),
+        }
+    }
+
+    pub fn cranelift_type(&self) -> cranelift::prelude::Type {
+        use cranelift::prelude::types;
+        match self {
+            Self::Void => types::INVALID,
+            Self::UInt8 => types::I8,
+            Self::UInt16 => types::I16,
+            Self::Int32 => types::I32,
+            Self::Int64 => types::I64,
+            Self::Float32 => types::F32,
+            Self::Float64 => types::F64,
+            Self::Boolean => types::I32,
+            Self::Bytes => types::I64,
+            Self::Dynamic => types::I64,
+            Self::Function { args: _, ret: _ } => types::I64,
+            Self::Object(_) => types::I64,
+            Self::Array => types::I64,
+            Self::Type => types::I64,
+            Self::Reference(_) => types::I64,
+            Self::Virtual { fields: _ } => types::I64,
+            Self::Dynobj => types::I64,
+            Self::Abstract(_) => types::I64,
+            Self::Enum {
+                constructs: _,
+                global_value: _,
+                name: _,
+            } => types::I64,
+            Self::Null(_) => types::I64,
+            Self::Method { args: _, ret: _ } => types::I64,
+            Self::Struct(_) => types::I64,
+            Self::Packed(_) => types::I64,
+            Self::Guid => types::I64,
         }
     }
 }
@@ -282,10 +318,10 @@ fn read_type(r: &mut Reader) -> io::Result<HLType> {
 }
 
 pub struct HLFunction {
-   pub ty: TypeIdx,
-   pub idx: usize,
-   pub regs: Vec<TypeIdx>,
-   pub opcodes: Vec<OpCode>,
+    pub ty: TypeIdx,
+    pub idx: FunIdx,
+    pub regs: Vec<TypeIdx>,
+    pub opcodes: Vec<OpCode>,
 }
 
 pub struct Code {
@@ -298,10 +334,24 @@ pub struct Code {
     pub debugfiles: Option<Vec<String>>,
     pub types: Vec<HLType>,
     pub globals: Vec<isize>,
-    pub natives: Vec<(StrIdx, StrIdx, TypeIdx, usize)>,
+    pub natives: Vec<(StrIdx, StrIdx, TypeIdx, FunIdx)>,
     pub functions: Vec<HLFunction>,
     pub constants: Vec<(usize, Vec<usize>)>,
-    pub entrypoint: usize,
+    pub entrypoint: FunIdx,
+}
+
+impl Code {
+    pub fn get_type(&self, idx: TypeIdx) -> &HLType {
+        &self.types[idx.0]
+    }
+}
+
+impl Index<TypeIdx> for Code {
+    type Output = HLType;
+
+    fn index(&self, idx: TypeIdx) -> &HLType {
+        &self.types[idx.0]
+    }
 }
 
 pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
@@ -332,7 +382,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
     let nnatives = r.udx()?;
     let nfunctions = r.udx()?;
     let nconstants = if version >= 4 { r.udx()? } else { 0 };
-    let entrypoint = r.udx()?;
+    let entrypoint = FunIdx(r.udx()?);
 
     let has_debug = flags & 1 == 1;
 
@@ -367,12 +417,12 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         let lib = s(r)?;
         let name = s(r)?;
         let t = ty(r)?;
-        let fidx = r.udx()?;
+        let fidx = FunIdx(r.udx()?);
         Ok((lib, name, t, fidx))
     })?;
     let functions = r.vec(nfunctions, |r| {
         let ty_ = ty(r)?;
-        let idx = r.udx()?;
+        let idx = FunIdx(r.udx()?);
         let nregs = r.udx()?;
         let nops = r.udx()?;
         let regs = r.vec(nregs, ty)?;

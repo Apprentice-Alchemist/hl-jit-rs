@@ -3,3 +3,4 @@
 /out
 Main.hx
 *.hl
+compile_commands.json
