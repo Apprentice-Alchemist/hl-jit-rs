@@ -2,15 +2,20 @@ use std::io;
 
 use crate::Reader;
 
-pub struct Reg(i32);
-pub struct Idx(isize);
+pub struct Reg(usize);
 
-fn reg(r: &mut Reader) -> io::Result<Reg> {
-    Ok(Reg(r.idx()? as i32))
+impl crate::code::Readable for Reg {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Reg(r.idx()? as usize))
+    }
 }
 
-fn idx(r: &mut Reader) -> io::Result<Idx> {
-    Ok(Idx(r.idx()?))
+pub struct Idx(isize);
+
+impl crate::code::Readable for Idx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.idx()?))
+    }
 }
 
 pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
@@ -18,174 +23,210 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
     let code = r.byte()?;
     let code = match code {
         0 => Mov {
-            dst: reg(r)?,
-            src: reg(r)?,
+            dst: r.r()?,
+            src: r.r()?,
         },
         1 => Int {
-            dst: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            idx: r.r()?,
         },
         2 => Float {
-            dst: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            idx: r.r()?,
         },
         3 => Bool {
-            dst: reg(r)?,
-            val: idx(r)?.0 > 0,
+            dst: r.r()?,
+            val: r.idx()? > 0,
         },
         4 => Bytes {
-            dst: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            idx: r.r()?,
         },
         5 => String {
-            dst: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            idx: r.r()?,
         },
-        6 => Null { dst: reg(r)? },
+        6 => Null { dst: r.r()? },
         7 => Add {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         8 => Sub {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         9 => Mul {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         10 => SDiv {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         11 => UDiv {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         12 => SMod {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         13 => UMod {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         14 => Shl {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         15 => SShr {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         16 => UShr {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         17 => And {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         18 => Or {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         19 => Xor {
-            dst: reg(r)?,
-            a: reg(r)?,
-            b: reg(r)?,
+            dst: r.r()?,
+            a: r.r()?,
+            b: r.r()?,
         },
         20 => Neg {
-            dst: reg(r)?,
-            val: reg(r)?,
+            dst: r.r()?,
+            val: r.r()?,
         },
         21 => Not {
-            dst: reg(r)?,
-            val: reg(r)?,
+            dst: r.r()?,
+            val: r.r()?,
         },
-        22 => Incr { dst: reg(r)? },
-        23 => Decr { dst: reg(r)? },
+        22 => Incr { dst: r.r()? },
+        23 => Decr { dst: r.r()? },
         24 => Call0 {
-            dst: reg(r)?,
-            f: reg(r)?,
+            dst: r.r()?,
+            f: r.r()?,
         },
         25 => Call1 {
-            dst: reg(r)?,
-            f: reg(r)?,
-            args: vec![reg(r)?],
+            dst: r.r()?,
+            f: r.r()?,
+            args: vec![r.r()?],
         },
         26 => Call2 {
-            dst: reg(r)?,
-            f: reg(r)?,
-            args: vec![reg(r)?, reg(r)?],
+            dst: r.r()?,
+            f: r.r()?,
+            args: vec![r.r()?, r.r()?],
         },
         27 => Call3 {
-            dst: reg(r)?,
-            f: reg(r)?,
-            args: vec![reg(r)?, reg(r)?, reg(r)?],
+            dst: r.r()?,
+            f: r.r()?,
+            args: vec![r.r()?, r.r()?, r.r()?],
         },
         28 => Call4 {
-            dst: reg(r)?,
-            f: reg(r)?,
-            args: vec![reg(r)?, reg(r)?, reg(r)?, reg(r)?],
+            dst: r.r()?,
+            f: r.r()?,
+            args: vec![r.r()?, r.r()?, r.r()?, r.r()?],
         },
         29 => CallN {
-            dst: reg(r)?,
-            f: reg(r)?,
+            dst: r.r()?,
+            f: r.r()?,
             args: {
                 let count = r.byte()? as usize;
-                r.vec(count, reg)?
+                r.vec(count, Reader::r)?
             },
         },
         30 => CallMethod {
-            dst: reg(r)?,
-            fid: idx(r)?,
+            dst: r.r()?,
+            fid: r.r()?,
             args: {
                 let count = r.byte()? as usize;
-                r.vec(count, reg)?
+                r.vec(count, Reader::r)?
             },
         },
         31 => CallThis {
-            dst: reg(r)?,
-            fid: idx(r)?,
+            dst: r.r()?,
+            fid: r.r()?,
             args: {
                 let count = r.byte()? as usize;
-                r.vec(count, reg)?
+                r.vec(count, Reader::r)?
             },
         },
         32 => CallClosure {
-            dst: reg(r)?,
-            closure: reg(r)?,
+            dst: r.r()?,
+            closure: r.r()?,
             args: {
                 let count = r.byte()? as usize;
-                r.vec(count, reg)?
+                r.vec(count, Reader::r)?
             },
         },
         33 => StaticClosure {
-            dst: reg(r)?,
-            fid: idx(r)?,
+            dst: r.r()?,
+            fid: r.r()?,
         },
         34 => InstanceClosure {
-            dst: reg(r)?,
-            obj: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            obj: r.r()?,
+            idx: r.r()?,
         },
         35 => VirtualClosure {
-            dst: reg(r)?,
-            obj: reg(r)?,
-            idx: idx(r)?,
+            dst: r.r()?,
+            obj: r.r()?,
+            idx: r.r()?,
+        },
+        36 => GetGlobal {
+            dst: r.r()?,
+            idx: r.r()?,
+        },
+        37 => SetGlobal {
+            idx: r.r()?,
+            val: r.r()?,
+        },
+        38 => Field {
+            dst: r.r()?,
+            obj: r.r()?,
+            fid: r.r()?,
+        },
+        39 => SetField {
+            obj: r.r()?,
+            fid: r.r()?,
+            val: r.r()?,
+        },
+        40 => GetThis {
+            dst: r.r()?,
+            fid: r.r()?,
+        },
+        41 => SetThis {
+            fid: r.r()?,
+            val: r.r()?,
+        },
+        42 => DynGet {
+            dst: r.r()?,
+            obj: r.r()?,
+            hashed_name: r.r()?,
+        },
+        42 => DynSet {
+            obj: r.r()?,
+            hashed_name: r.r()?,
+            val: r.r()?,
         },
 
         _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid opcode")),
@@ -376,8 +417,8 @@ pub enum OpCode {
     },
     SetField {
         obj: Reg,
-        fid: Reg,
-        val: Idx,
+        fid: Idx,
+        val: Reg,
     },
     GetThis {
         dst: Reg,
@@ -585,7 +626,6 @@ pub enum OpCode {
         r: Reg,
         val: Reg,
     },
-
     MakeEnum {
         dst: Reg,
         construct_idx: Idx,

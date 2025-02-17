@@ -70,6 +70,10 @@ impl Reader {
         }
         Ok(v)
     }
+
+    pub fn r<T>(&mut self) -> io::Result<T> where T: Readable {
+        T::r(self)
+    }
 }
 
 fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
@@ -81,7 +85,6 @@ fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
     let mut cursor = std::io::Cursor::new(buf);
 
     let mut string_vec = Vec::with_capacity(nstrings);
-    println!("string count: {}", nstrings);
     for _ in 0..nstrings {
         let sz = r.udx()?;
         // include null terminator
@@ -107,17 +110,37 @@ pub struct UStrIdx(pub usize);
 pub struct StrIdx(pub usize);
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FunIdx(pub usize);
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GlobalIdx(pub usize);
 
-fn ty(r: &mut Reader) -> io::Result<TypeIdx> {
-    Ok(TypeIdx(r.idx()? as usize))
+pub trait Readable {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized;
 }
 
-fn s(r: &mut Reader) -> io::Result<StrIdx> {
-    Ok(StrIdx(r.idx()? as usize))
+impl Readable for TypeIdx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.udx()?))
+    }
 }
-
-fn us(r: &mut Reader) -> io::Result<UStrIdx> {
-    Ok(UStrIdx(r.idx()? as usize))
+impl Readable for UStrIdx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.udx()?))
+    }
+}
+impl Readable for StrIdx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.udx()?))
+    }
+}
+impl Readable for FunIdx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.udx()?))
+    }
+}
+impl Readable for GlobalIdx {
+    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+        Ok(Self(r.udx()?))
+    }
 }
 
 #[derive(Clone)]
@@ -217,7 +240,7 @@ impl HLType {
 }
 
 fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
-    let name = us(r)?;
+    let name = r.r()?;
     let super_ = r.idx()?;
     let global = r.udx()?;
     let nfields = r.udx()?;
@@ -225,13 +248,13 @@ fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
     let nbindings = r.udx()?;
 
     let fields = r.vec(nfields, |r| {
-        let name = us(r)?;
-        let ty = ty(r)?;
+        let name = r.r()?;
+        let ty = r.r()?;
         Ok((name, ty))
     })?;
 
     let protos = r.vec(nproto, |r| {
-        let name = us(r)?;
+        let name = r.r()?;
         let fidx = r.udx()?;
         let pidx = r.idx()?;
         Ok((name, fidx, pidx))
@@ -264,33 +287,33 @@ fn read_type(r: &mut Reader) -> io::Result<HLType> {
         crate::sys::hl_type_kind_HDYN => HLType::Dynamic,
         crate::sys::hl_type_kind_HFUN => {
             let nargs = r.byte()? as usize;
-            let args = r.vec(nargs, ty)?;
-            let ret = ty(r)?;
+            let args = r.vec(nargs, Reader::r)?;
+            let ret = r.r()?;
             HLType::Function { args, ret }
         }
         crate::sys::hl_type_kind_HOBJ => HLType::Object(read_obj(r)?),
         crate::sys::hl_type_kind_HARRAY => HLType::Array,
         crate::sys::hl_type_kind_HTYPE => HLType::Type,
-        crate::sys::hl_type_kind_HREF => HLType::Reference(ty(r)?),
+        crate::sys::hl_type_kind_HREF => HLType::Reference(r.r()?),
         crate::sys::hl_type_kind_HVIRTUAL => {
             let nfields = r.udx()?;
             let fields = r.vec(nfields, |r| {
-                let name = us(r)?;
-                let ty_ = ty(r)?;
+                let name = r.r()?;
+                let ty_ = r.r()?;
                 Ok((name, ty_))
             })?;
             HLType::Virtual { fields }
         }
         crate::sys::hl_type_kind_HDYNOBJ => HLType::Dynobj,
-        crate::sys::hl_type_kind_HABSTRACT => HLType::Abstract(us(r)?),
+        crate::sys::hl_type_kind_HABSTRACT => HLType::Abstract(r.r()?),
         crate::sys::hl_type_kind_HENUM => {
-            let name: UStrIdx = us(r)?;
+            let name: UStrIdx = r.r()?;
             let global_value = r.udx()?;
             let nconstructs = r.udx()?;
             let constructs = r.vec(nconstructs, |r| {
-                let name = us(r)?;
+                let name = r.r()?;
                 let nparams = r.udx()?;
-                let params = r.vec(nparams, ty)?;
+                let params = r.vec(nparams, Reader::r)?;
                 Ok((name, params))
             })?;
             HLType::Enum {
@@ -299,15 +322,15 @@ fn read_type(r: &mut Reader) -> io::Result<HLType> {
                 constructs,
             }
         }
-        crate::sys::hl_type_kind_HNULL => HLType::Null(ty(r)?),
+        crate::sys::hl_type_kind_HNULL => HLType::Null(r.r()?),
         crate::sys::hl_type_kind_HMETHOD => {
             let nargs = r.byte()? as usize;
-            let args = r.vec(nargs, ty)?;
-            let ret = ty(r)?;
+            let args = r.vec(nargs, Reader::r)?;
+            let ret = r.r()?;
             HLType::Method { args, ret }
         }
         crate::sys::hl_type_kind_HSTRUCT => HLType::Struct(read_obj(r)?),
-        crate::sys::hl_type_kind_HPACKED => HLType::Packed(ty(r)?),
+        crate::sys::hl_type_kind_HPACKED => HLType::Packed(r.r()?),
         // crate::sys::hl_type_kind_HGUID => HLType::Guid,
         kind => {
             println!("{}", kind);
@@ -336,7 +359,7 @@ pub struct Code {
     pub globals: Vec<isize>,
     pub natives: Vec<(StrIdx, StrIdx, TypeIdx, FunIdx)>,
     pub functions: Vec<HLFunction>,
-    pub constants: Vec<(usize, Vec<usize>)>,
+    pub constants: Vec<(GlobalIdx, Vec<usize>)>,
     pub entrypoint: FunIdx,
 }
 
@@ -414,18 +437,18 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
     let types = r.vec(ntypes, read_type)?;
     let globals = r.vec(nglobals, Reader::idx)?;
     let natives = r.vec(nnatives, |r| {
-        let lib = s(r)?;
-        let name = s(r)?;
-        let t = ty(r)?;
+        let lib = r.r()?;
+        let name = r.r()?;
+        let t = r.r()?;
         let fidx = FunIdx(r.udx()?);
         Ok((lib, name, t, fidx))
     })?;
     let functions = r.vec(nfunctions, |r| {
-        let ty_ = ty(r)?;
+        let ty_ = r.r()?;
         let idx = FunIdx(r.udx()?);
         let nregs = r.udx()?;
         let nops = r.udx()?;
-        let regs = r.vec(nregs, ty)?;
+        let regs = r.vec(nregs, Reader::r)?;
         let opcodes = r.vec(nops, crate::opcode::read_opcode)?;
         if has_debug {
             let mut i = 0;
@@ -483,7 +506,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         })
     })?;
     let constants = r.vec(nconstants, |r| {
-        let global = r.udx()?;
+        let global = r.r()?;
         let nfields = r.udx()?;
         let fields = r.vec(nfields, Reader::udx)?;
         Ok((global, fields))
