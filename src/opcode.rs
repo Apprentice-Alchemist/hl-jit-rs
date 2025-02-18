@@ -5,7 +5,10 @@ use crate::Reader;
 pub struct Reg(usize);
 
 impl crate::code::Readable for Reg {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Reg(r.idx()? as usize))
     }
 }
@@ -13,7 +16,10 @@ impl crate::code::Readable for Reg {
 pub struct Idx(isize);
 
 impl crate::code::Readable for Idx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.idx()?))
     }
 }
@@ -223,9 +229,104 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
             obj: r.r()?,
             hashed_name: r.r()?,
         },
-        42 => DynSet {
+        43 => DynSet {
             obj: r.r()?,
             hashed_name: r.r()?,
+            val: r.r()?,
+        },
+        44 => JTrue {
+            val: r.r()?,
+            offset: r.r()?,
+        },
+        45 => JFalse {
+            val: r.r()?,
+            offset: r.r()?,
+        },
+        46 => JNull {
+            val: r.r()?,
+            offset: r.r()?,
+        },
+        47 => JNotNull {
+            val: r.r()?,
+            offset: r.r()?,
+        },
+        48 => JSLt {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        49 => JSGte {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        50 => JSGt {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        51 => JSLte {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        52 => JULt {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        53 => JUGte {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        54 => JNotLt {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        55 => JNotGte {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        56 => JEq {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        57 => JNotEq {
+            a: r.r()?,
+            b: r.r()?,
+            offset: r.r()?,
+        },
+        58 => JAlways { offset: r.r()? },
+        59 => ToDyn {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        60 => ToSFloat {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        61 => ToUFloat {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        62 => ToInt {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        63 => SafeCast {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        64 => UnsafeCast {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        65 => ToVirtual {
+            dst: r.r()?,
             val: r.r()?,
         },
 
@@ -454,42 +555,42 @@ pub enum OpCode {
         val: Reg,
         offset: Idx,
     },
-    JSLq {
+    JSLt {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JSGtq {
+    JSGte {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JSGq {
+    JSGt {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JSLtq {
+    JSLte {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JULq {
+    JULt {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JUGtq {
+    JUGte {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JNotLq {
+    JNotLt {
         a: Reg,
         b: Reg,
         offset: Idx,
     },
-    JNotGtq {
+    JNotGte {
         a: Reg,
         b: Reg,
         offset: Idx,
@@ -508,31 +609,31 @@ pub enum OpCode {
         offset: Idx,
     },
 
-    OToDyn {
+    ToDyn {
         dst: Reg,
         val: Reg,
     },
-    OToSFloat {
+    ToSFloat {
         dst: Reg,
         val: Reg,
     },
-    OToUFloat {
+    ToUFloat {
         dst: Reg,
         val: Reg,
     },
-    OToInt {
+    ToInt {
         dst: Reg,
         val: Reg,
     },
-    OSafeCast {
+    SafeCast {
         dst: Reg,
         val: Reg,
     },
-    OUnsafeCast {
+    UnsafeCast {
         dst: Reg,
         val: Reg,
     },
-    OToVirtual {
+    ToVirtual {
         dst: Reg,
         val: Reg,
     },
