@@ -71,7 +71,10 @@ impl Reader {
         Ok(v)
     }
 
-    pub fn r<T>(&mut self) -> io::Result<T> where T: Readable {
+    pub fn r<T>(&mut self) -> io::Result<T>
+    where
+        T: Readable,
+    {
         T::r(self)
     }
 }
@@ -114,43 +117,78 @@ pub struct FunIdx(pub usize);
 pub struct GlobalIdx(pub usize);
 
 pub trait Readable {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized;
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized;
 }
 
 impl Readable for TypeIdx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.udx()?))
     }
 }
 impl Readable for UStrIdx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.udx()?))
     }
 }
 impl Readable for StrIdx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.udx()?))
     }
 }
 impl Readable for FunIdx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.udx()?))
     }
 }
 impl Readable for GlobalIdx {
-    fn r(r: &mut Reader) -> io::Result<Self> where Self: Sized {
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
         Ok(Self(r.udx()?))
     }
 }
 
 #[derive(Clone)]
 pub struct TypeObj {
-    name: UStrIdx,
-    super_: isize,
-    global: usize,
-    fields: Vec<(UStrIdx, TypeIdx)>,
-    protos: Vec<(UStrIdx, usize, isize)>,
-    bindings: Vec<(usize, usize)>,
+    pub name: UStrIdx,
+    pub super_: isize,
+    pub global: usize,
+    pub fields: Vec<(UStrIdx, TypeIdx)>,
+    pub protos: Vec<(UStrIdx, usize, isize)>,
+    pub bindings: Vec<(usize, usize)>,
+}
+
+#[derive(Clone)]
+pub struct TypeFun {
+    pub args: Vec<TypeIdx>,
+    pub ret: TypeIdx,
+}
+
+#[derive(Clone)]
+pub struct TypeEnum {
+    pub name: UStrIdx,
+    pub global_value: usize,
+    pub constructs: Vec<(UStrIdx, Vec<TypeIdx>)>,
+}
+
+#[derive(Clone)]
+pub struct TypeVirtual {
+    pub fields: Vec<(UStrIdx, TypeIdx)>,
 }
 
 #[derive(Clone)]
@@ -165,29 +203,17 @@ pub enum HLType {
     Boolean,
     Bytes,
     Dynamic,
-    Function {
-        args: Vec<TypeIdx>,
-        ret: TypeIdx,
-    },
+    Function(TypeFun),
     Object(TypeObj),
     Array,
     Type,
     Reference(TypeIdx),
-    Virtual {
-        fields: Vec<(UStrIdx, TypeIdx)>,
-    },
+    Virtual(TypeVirtual),
     Dynobj,
     Abstract(UStrIdx),
-    Enum {
-        name: UStrIdx,
-        global_value: usize,
-        constructs: Vec<(UStrIdx, Vec<TypeIdx>)>,
-    },
+    Enum(TypeEnum),
     Null(TypeIdx),
-    Method {
-        args: Vec<TypeIdx>,
-        ret: TypeIdx,
-    },
+    Method(TypeFun),
     Struct(TypeObj),
     Packed(TypeIdx),
     Guid,
@@ -217,21 +243,17 @@ impl HLType {
             Self::Boolean => types::I32,
             Self::Bytes => types::I64,
             Self::Dynamic => types::I64,
-            Self::Function { args: _, ret: _ } => types::I64,
+            Self::Function(_) => types::I64,
             Self::Object(_) => types::I64,
             Self::Array => types::I64,
             Self::Type => types::I64,
             Self::Reference(_) => types::I64,
-            Self::Virtual { fields: _ } => types::I64,
+            Self::Virtual(_) => types::I64,
             Self::Dynobj => types::I64,
             Self::Abstract(_) => types::I64,
-            Self::Enum {
-                constructs: _,
-                global_value: _,
-                name: _,
-            } => types::I64,
+            Self::Enum(_) => types::I64,
             Self::Null(_) => types::I64,
-            Self::Method { args: _, ret: _ } => types::I64,
+            Self::Method(_) => types::I64,
             Self::Struct(_) => types::I64,
             Self::Packed(_) => types::I64,
             Self::Guid => types::I64,
@@ -272,6 +294,40 @@ fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
     })
 }
 
+fn read_type_fun(r: &mut Reader) -> io::Result<TypeFun> {
+    let nargs = r.byte()? as usize;
+    let args = r.vec(nargs, Reader::r)?;
+    let ret = r.r()?;
+    Ok(TypeFun { args, ret })
+}
+
+fn read_type_virtual(r: &mut Reader) -> io::Result<TypeVirtual> {
+    let nfields = r.udx()?;
+    let fields = r.vec(nfields, |r| {
+        let name = r.r()?;
+        let ty_ = r.r()?;
+        Ok((name, ty_))
+    })?;
+    Ok(TypeVirtual { fields })
+}
+
+fn read_type_enum(r: &mut Reader) -> io::Result<TypeEnum> {
+    let name: UStrIdx = r.r()?;
+    let global_value = r.udx()?;
+    let nconstructs = r.udx()?;
+    let constructs = r.vec(nconstructs, |r| {
+        let name = r.r()?;
+        let nparams = r.udx()?;
+        let params = r.vec(nparams, Reader::r)?;
+        Ok((name, params))
+    })?;
+    Ok(TypeEnum {
+        name,
+        global_value,
+        constructs,
+    })
+}
+
 fn read_type(r: &mut Reader) -> io::Result<HLType> {
     let kind = r.byte()?;
     let t = match kind as u32 {
@@ -285,50 +341,17 @@ fn read_type(r: &mut Reader) -> io::Result<HLType> {
         crate::sys::hl_type_kind_HBOOL => HLType::Boolean,
         crate::sys::hl_type_kind_HBYTES => HLType::Bytes,
         crate::sys::hl_type_kind_HDYN => HLType::Dynamic,
-        crate::sys::hl_type_kind_HFUN => {
-            let nargs = r.byte()? as usize;
-            let args = r.vec(nargs, Reader::r)?;
-            let ret = r.r()?;
-            HLType::Function { args, ret }
-        }
+        crate::sys::hl_type_kind_HFUN => HLType::Function(read_type_fun(r)?),
         crate::sys::hl_type_kind_HOBJ => HLType::Object(read_obj(r)?),
         crate::sys::hl_type_kind_HARRAY => HLType::Array,
         crate::sys::hl_type_kind_HTYPE => HLType::Type,
         crate::sys::hl_type_kind_HREF => HLType::Reference(r.r()?),
-        crate::sys::hl_type_kind_HVIRTUAL => {
-            let nfields = r.udx()?;
-            let fields = r.vec(nfields, |r| {
-                let name = r.r()?;
-                let ty_ = r.r()?;
-                Ok((name, ty_))
-            })?;
-            HLType::Virtual { fields }
-        }
+        crate::sys::hl_type_kind_HVIRTUAL => HLType::Virtual(read_type_virtual(r)?),
         crate::sys::hl_type_kind_HDYNOBJ => HLType::Dynobj,
         crate::sys::hl_type_kind_HABSTRACT => HLType::Abstract(r.r()?),
-        crate::sys::hl_type_kind_HENUM => {
-            let name: UStrIdx = r.r()?;
-            let global_value = r.udx()?;
-            let nconstructs = r.udx()?;
-            let constructs = r.vec(nconstructs, |r| {
-                let name = r.r()?;
-                let nparams = r.udx()?;
-                let params = r.vec(nparams, Reader::r)?;
-                Ok((name, params))
-            })?;
-            HLType::Enum {
-                name,
-                global_value,
-                constructs,
-            }
-        }
+        crate::sys::hl_type_kind_HENUM => HLType::Enum(read_type_enum(r)?),
         crate::sys::hl_type_kind_HNULL => HLType::Null(r.r()?),
-        crate::sys::hl_type_kind_HMETHOD => {
-            let nargs = r.byte()? as usize;
-            let args = r.vec(nargs, Reader::r)?;
-            let ret = r.r()?;
-            HLType::Method { args, ret }
-        }
+        crate::sys::hl_type_kind_HMETHOD => HLType::Method(read_type_fun(r)?),
         crate::sys::hl_type_kind_HSTRUCT => HLType::Struct(read_obj(r)?),
         crate::sys::hl_type_kind_HPACKED => HLType::Packed(r.r()?),
         // crate::sys::hl_type_kind_HGUID => HLType::Guid,
@@ -374,6 +397,14 @@ impl Index<TypeIdx> for Code {
 
     fn index(&self, idx: TypeIdx) -> &HLType {
         &self.types[idx.0]
+    }
+}
+
+impl Index<StrIdx> for Code {
+    type Output = str;
+
+    fn index(&self, idx: StrIdx) -> &Self::Output {
+        &self.strings[idx.0]
     }
 }
 

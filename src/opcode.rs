@@ -1,8 +1,16 @@
 use std::io;
 
-use crate::Reader;
+use cranelift::prelude::{Variable,EntityRef};
 
+use crate::Reader;
+#[derive(Copy, Clone)]
 pub struct Reg(usize);
+
+impl Reg {
+    pub fn var(self) -> Variable {
+        Variable::new(self.0)
+    }
+}
 
 impl crate::code::Readable for Reg {
     fn r(r: &mut Reader) -> io::Result<Self>
@@ -12,7 +20,7 @@ impl crate::code::Readable for Reg {
         Ok(Reg(r.idx()? as usize))
     }
 }
-
+#[derive(Copy, Clone)]
 pub struct Idx(isize);
 
 impl crate::code::Readable for Idx {
