@@ -1,6 +1,6 @@
 use std::io;
 
-use cranelift::prelude::{Variable,EntityRef};
+use cranelift::prelude::{EntityRef, Variable};
 
 use crate::Reader;
 #[derive(Copy, Clone)]
@@ -337,7 +337,86 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
             dst: r.r()?,
             val: r.r()?,
         },
-
+        66 => Label,
+        67 => Ret(r.r()?),
+        68 => Throw(r.r()?),
+        69 => Rethrow(r.r()?),
+        70 => todo!(),
+        71 => NullCheck(r.r()?),
+        72 => Trap {
+            dst: r.r()?,
+            jump_off: r.r()?,
+        },
+        73 => EndTrap { something: r.r()? },
+        74 => GetI8 {
+            dst: r.r()?,
+            mem: r.r()?,
+            val: r.r()?,
+        },
+        75 => GetI16 {
+            dst: r.r()?,
+            mem: r.r()?,
+            val: r.r()?,
+        },
+        76 => GetMem {
+            dst: r.r()?,
+            mem: r.r()?,
+            val: r.r()?,
+        },
+        77 => GetArray {
+            dst: r.r()?,
+            mem: r.r()?,
+            val: r.r()?,
+        },
+        78 => SetI8 {
+            mem: r.r()?,
+            offset: r.r()?,
+            val: r.r()?,
+        },
+        79 => SetI16 {
+            mem: r.r()?,
+            offset: r.r()?,
+            val: r.r()?,
+        },
+        80 => SetMem {
+            mem: r.r()?,
+            offset: r.r()?,
+            val: r.r()?,
+        },
+        81 => SetArray {
+            mem: r.r()?,
+            offset: r.r()?,
+            val: r.r()?,
+        },
+        82 => New { dst: r.r()? },
+        83 => ArraySize {
+            dst: r.r()?,
+            arr: r.r()?,
+        },
+        84 => Type {
+            dst: r.r()?,
+            idx: r.r()?,
+        },
+        85 => GetType {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        86 => GetTid {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        87 => Ref {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        88 => Unref {
+            dst: r.r()?,
+            r: r.r()?,
+        },
+        89 => Setref {
+            r: r.r()?,
+            val: r.r()?,
+        },
         _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid opcode")),
     };
     Ok(code)
@@ -683,22 +762,22 @@ pub enum OpCode {
         mem: Reg,
         val: Reg,
     },
-    OSetI8 {
+    SetI8 {
         mem: Reg,
         offset: Reg,
         val: Reg,
     },
-    OSetI16 {
+    SetI16 {
         mem: Reg,
         offset: Reg,
         val: Reg,
     },
-    OSetMem {
+    SetMem {
         mem: Reg,
         offset: Reg,
         val: Reg,
     },
-    OSetArray {
+    SetArray {
         mem: Reg,
         offset: Reg,
         val: Reg,
