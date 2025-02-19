@@ -2,9 +2,12 @@ use std::io;
 
 use cranelift::prelude::{EntityRef, Variable};
 
-use crate::Reader;
+use crate::{
+    code::{Readable, UStrIdx},
+    Reader,
+};
 #[derive(Copy, Clone)]
-pub struct Reg(usize);
+pub struct Reg(pub(crate) usize);
 
 impl Reg {
     pub fn var(self) -> Variable {
@@ -21,7 +24,7 @@ impl crate::code::Readable for Reg {
     }
 }
 #[derive(Copy, Clone)]
-pub struct Idx(isize);
+pub struct Idx(pub isize);
 
 impl crate::code::Readable for Idx {
     fn r(r: &mut Reader) -> io::Result<Self>
@@ -341,7 +344,14 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
         67 => Ret(r.r()?),
         68 => Throw(r.r()?),
         69 => Rethrow(r.r()?),
-        70 => todo!(),
+        70 => Switch {
+            val: r.r()?,
+            cases: {
+                let len = r.udx()?;
+                r.vec(len, Idx::r)?
+            },
+            end: r.r()?,
+        },
         71 => NullCheck(r.r()?),
         72 => Trap {
             dst: r.r()?,
@@ -417,6 +427,50 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
             r: r.r()?,
             val: r.r()?,
         },
+        90 => MakeEnum {
+            dst: r.r()?,
+            construct_idx: r.r()?,
+            params: {
+                let len = r.udx()?;
+                r.vec(len, Reg::r)?
+            },
+        },
+        91 => EnumAlloc {
+            dst: r.r()?,
+            idx: r.r()?,
+        },
+        92 => EnumIndex {
+            dst: r.r()?,
+            val: r.r()?,
+        },
+        93 => EnumField {
+            dst: r.r()?,
+            obj: r.r()?,
+            construct_idx: r.r()?,
+            field_idx: r.r()?,
+        },
+        94 => SetEnumField {
+            obj: r.r()?,
+            field_idx: r.r()?,
+            val: r.r()?,
+        },
+        95 => Assert,
+        96 => RefData {
+            dst: r.r()?,
+            r: r.r()?,
+        },
+        97 => RefOffset {
+            dst: r.r()?,
+            r: r.r()?,
+            off: r.r()?,
+        },
+        98 => Nop,
+        99 => Prefetch {
+            args: [r.r()?, r.r()?, r.r()?],
+        },
+        100 => Asm {
+            args: [r.r()?, r.r()?, r.r()?],
+        },
         _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid opcode")),
     };
     Ok(code)
@@ -445,7 +499,7 @@ pub enum OpCode {
     },
     String {
         dst: Reg,
-        idx: Idx,
+        idx: UStrIdx,
     },
     Null {
         dst: Reg,
@@ -823,7 +877,7 @@ pub enum OpCode {
         dst: Reg,
         idx: Idx,
     },
-    OEnumIndex {
+    EnumIndex {
         dst: Reg,
         val: Reg,
     },

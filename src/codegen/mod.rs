@@ -20,16 +20,16 @@ struct Indexes {
     fn_map: BTreeMap<FunIdx, FuncId>,
 }
 
-pub struct CodegenCtx<M: Module> {
-    m: M,
+pub struct CodegenCtx<'a> {
+    m: &'a mut dyn Module,
     f_ctx: FunctionBuilderContext,
     ctx: Context,
     idxs: Indexes,
     code: crate::code::Code,
 }
 
-impl<M: Module> CodegenCtx<M> {
-    pub fn new(m: M, code: crate::code::Code) -> Self {
+impl<'a> CodegenCtx<'a> {
+    pub fn new(m:&'a mut dyn Module , code: crate::code::Code) -> Self {
         let ctx = m.make_context();
         Self {
             m,
@@ -40,7 +40,7 @@ impl<M: Module> CodegenCtx<M> {
         }
     }
 
-    pub fn finish(self) -> (M, FuncId) {
-        (self.m, self.idxs.fn_map[&self.code.entrypoint])
+    pub fn finish(self) -> FuncId {
+        self.idxs.fn_map[&self.code.entrypoint]
     }
 }

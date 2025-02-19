@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use crate::opcode::OpCode;
+use crate::opcode::{OpCode, Reg};
 
 pub struct Reader(BufReader<File>);
 impl Reader {
@@ -39,7 +39,7 @@ impl Reader {
         Ok(if b & 0x20 == 0 { v } else { -v })
     }
 
-    fn udx(&mut self) -> io::Result<usize> {
+    pub fn udx(&mut self) -> io::Result<usize> {
         let i = self.idx()?;
         if i.is_negative() {
             return Err(io::Error::new(ErrorKind::InvalidData, "negative index"));
@@ -230,6 +230,10 @@ impl HLType {
         }
     }
 
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::Float32 | Self::Float64)
+    }
+
     pub fn cranelift_type(&self) -> cranelift::prelude::Type {
         use cranelift::prelude::types;
         match self {
@@ -370,6 +374,14 @@ pub struct HLFunction {
     pub opcodes: Vec<OpCode>,
 }
 
+impl Index<Reg> for HLFunction {
+    type Output = TypeIdx;
+
+    fn index(&self, index: Reg) -> &Self::Output {
+        &self.regs[index.0]
+    }
+}
+
 pub struct Code {
     pub version: u8,
     pub flags: usize,
@@ -481,12 +493,12 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         let nops = r.udx()?;
         let regs = r.vec(nregs, Reader::r)?;
         let opcodes = r.vec(nops, crate::opcode::read_opcode)?;
-        if has_debug {
+        if let Some(ref debugfiles) = debugfiles {
             let mut i = 0;
             let mut debug = Vec::new();
             let mut curfile = -1;
             let mut curline = 0;
-            let ndebugfiles = debugfiles.as_ref().unwrap().len();
+            let ndebugfiles = debugfiles.len();
             while i < nops {
                 let mut c = r.byte()? as i32;
                 if c & 1 > 0 {
@@ -519,6 +531,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
                     curline = (c >> 3) | (b2 << 5) | (b3 << 13);
                     debug.push(curfile);
                     debug.push(curline);
+                    i += 1;
                 }
             }
             if version >= 3 {

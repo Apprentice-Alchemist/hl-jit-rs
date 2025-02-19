@@ -17,7 +17,9 @@ mod sys {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let reader = Reader::open_file("out.hl")?;
+    let mut args = std::env::args();
+    let file = args.nth(1).unwrap();
+    let reader = Reader::open_file(file)?;
     let code = crate::code::read_code(reader)?;
 
     let (m, entrypoint) = crate::jit::compile_module(code);
