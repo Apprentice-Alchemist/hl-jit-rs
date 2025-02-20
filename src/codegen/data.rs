@@ -12,20 +12,6 @@ use crate::{
 
 use super::Indexes;
 
-// fn fill_signature(code: &Code, sig: &mut Signature, ty: TypeIdx) {
-//     let (args, ret) = match code.get_type(ty) {
-//         HLType::Function { args, ret } => (args, ret),
-//         HLType::Method { args, ret } => (args, ret),
-//         _ => panic!(),
-//     };
-//     sig.params.extend(
-//         args.iter()
-//             .map(|idx| AbiParam::new(code.get_type(*idx).cranelift_type())),
-//     );
-//     sig.returns
-//         .push(AbiParam::new(code.get_type(*ret).cranelift_type()));
-// }
-
 pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<(), Box<dyn Error>> {
     for idx in 0..code.types.len() {
         let id = m.declare_anonymous_data(true, false)?;

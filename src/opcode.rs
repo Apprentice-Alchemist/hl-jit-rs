@@ -3,7 +3,7 @@ use std::io;
 use cranelift::prelude::{EntityRef, Variable};
 
 use crate::{
-    code::{Readable, UStrIdx},
+    code::{FunIdx, GlobalIdx, Readable, UStrIdx},
     Reader,
 };
 #[derive(Copy, Clone)]
@@ -587,31 +587,31 @@ pub enum OpCode {
 
     Call0 {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
     },
     Call1 {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
         args: Vec<Reg>,
     },
     Call2 {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
         args: Vec<Reg>,
     },
     Call3 {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
         args: Vec<Reg>,
     },
     Call4 {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
         args: Vec<Reg>,
     },
     CallN {
         dst: Reg,
-        f: Reg,
+        f: FunIdx,
         args: Vec<Reg>,
     },
     CallMethod {
@@ -646,10 +646,10 @@ pub enum OpCode {
     },
     GetGlobal {
         dst: Reg,
-        idx: Idx,
+        idx: GlobalIdx,
     },
     SetGlobal {
-        idx: Idx,
+        idx: GlobalIdx,
         val: Reg,
     },
     Field {
