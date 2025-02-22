@@ -238,11 +238,11 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
         42 => DynGet {
             dst: r.r()?,
             obj: r.r()?,
-            hashed_name: r.r()?,
+            str_idx: r.r()?,
         },
         43 => DynSet {
             obj: r.r()?,
-            hashed_name: r.r()?,
+            str_idx: r.r()?,
             val: r.r()?,
         },
         44 => JTrue {
@@ -673,11 +673,11 @@ pub enum OpCode {
     DynGet {
         dst: Reg,
         obj: Reg,
-        hashed_name: Idx,
+        str_idx: UStrIdx,
     },
     DynSet {
         obj: Reg,
-        hashed_name: Idx,
+        str_idx: UStrIdx,
         val: Reg,
     },
     JTrue {

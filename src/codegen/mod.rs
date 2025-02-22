@@ -18,7 +18,24 @@ struct Indexes {
     types: BTreeMap<TypeIdx, DataId>,
     ustr: BTreeMap<UStrIdx, DataId>,
     fn_map: BTreeMap<FunIdx, FuncId>,
-    globals: BTreeMap<GlobalIdx, DataId>
+    globals: BTreeMap<GlobalIdx, DataId>,
+    native_calls: BTreeMap<&'static str, FuncId>,
+}
+
+static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
+    ("fmod", &[types::F64], &[types::F64]),
+    ("fmodf", &[types::F32], &[types::F32]),
+    ("hl_alloc_obj", &[types::I64], &[types::I64]),
+];
+
+fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
+    for (name, args, ret) in NATIVE_CALLS {
+        let mut signature = m.make_signature();
+        signature.params = args.iter().map(|t| AbiParam::new(*t)).collect();
+        signature.returns = ret.iter().map(|t| AbiParam::new(*t)).collect();
+        let id = m.declare_function(name, Linkage::Import, &signature).unwrap();
+        idxs.native_calls.insert(name, id);
+    }
 }
 
 pub struct CodegenCtx<'a> {
@@ -32,6 +49,9 @@ pub struct CodegenCtx<'a> {
 impl<'a> CodegenCtx<'a> {
     pub fn new(m: &'a mut dyn Module, code: crate::code::Code) -> Self {
         let ctx = m.make_context();
+        let mut idxs = Default::default();
+        data::declare(m, &code, &mut idxs).unwrap();
+        build_native_calls(m, &mut idxs);
         Self {
             m,
             f_ctx: FunctionBuilderContext::new(),
@@ -42,16 +62,16 @@ impl<'a> CodegenCtx<'a> {
     }
 
     pub fn finish(mut self) -> FuncId {
-        data::declare(&mut self.m, &self.code, &mut self.idxs).unwrap();
-        for fun in &self.code.functions {
-            let mut signature = self.m.make_signature();
-            fill_signature(&self.code, &mut signature, fun.ty);
-            let id = self.m.declare_anonymous_function(&signature).unwrap();
-            self.idxs.fn_map.insert(fun.idx, id);
-        }
-        for fun in self.code.functions.iter() {
-            emit::translate_function(self.m, &self.code, &self.idxs, fun);
-        }
+        // data::declare(&mut self.m, &self.code, &mut self.idxs).unwrap();
+        // for fun in &self.code.functions {
+        //     let mut signature = self.m.make_signature();
+        //     fill_signature(&self.code, &mut signature, fun.ty);
+        //     let id = self.m.declare_anonymous_function(&signature).unwrap();
+        //     self.idxs.fn_map.insert(fun.idx, id);
+        // }
+        // for fun in self.code.functions.iter() {
+        //     emit::translate_function(self.m, &self.code, &self.idxs, fun);
+        // }
 
         self.idxs.fn_map[&self.code.entrypoint]
     }
