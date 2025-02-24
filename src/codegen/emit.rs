@@ -4,12 +4,21 @@ use cranelift::module::Module;
 use cranelift::prelude::*;
 
 use crate::{
-    code::{Code, HLFunction, HLType},
+    code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
-    sys::hl_type,
+    sys::{hl_type, vvirtual},
 };
 
 use super::{CodegenCtx, Indexes};
+
+pub fn emit_fun(ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
+    let mut emit_ctx = EmitCtx::new(ctx, code, fun);
+    emit_ctx.translate_body();
+    emit_ctx.finish();
+    ctx.m
+        .define_function(ctx.idxs.fn_map[&fun.idx], &mut ctx.ctx)
+        .unwrap();
+}
 
 struct EmitCtx<'a> {
     m: &'a mut dyn Module,
@@ -20,6 +29,7 @@ struct EmitCtx<'a> {
     blocks: BTreeMap<usize, Block>,
     // position of current HL opcode
     pos: usize,
+    field_offsets: BTreeMap<TypeIdx, Vec<u32>>,
 }
 
 impl<'a> std::ops::Deref for EmitCtx<'a> {
@@ -37,13 +47,12 @@ impl<'a> std::ops::DerefMut for EmitCtx<'a> {
 }
 
 impl<'a> EmitCtx<'a> {
-    pub fn new(c_ctx: &'a mut CodegenCtx, fun: &'a HLFunction) -> EmitCtx<'a> {
+    pub fn new(c_ctx: &'a mut CodegenCtx, code: &'a Code, fun: &'a HLFunction) -> EmitCtx<'a> {
         let CodegenCtx {
             m,
             f_ctx,
             ctx,
             idxs,
-            code,
         } = c_ctx;
 
         m.clear_context(ctx);
@@ -57,7 +66,9 @@ impl<'a> EmitCtx<'a> {
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, f_ctx);
         for (idx, ty) in fun.regs.iter().enumerate() {
-            builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
+            if !code[*ty].is_void() {
+                builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
+            }
         }
 
         let entry_block = builder.create_block();
@@ -80,7 +91,49 @@ impl<'a> EmitCtx<'a> {
             builder,
             blocks,
             pos: 0,
+            field_offsets: BTreeMap::new(),
         }
+    }
+
+    fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
+        if let Some(offsets) = self.field_offsets.get(&ty) {
+            return Some(offsets[field_idx]);
+        }
+
+        let mut offsets = Vec::<u32>::new();
+
+        fn fill_offsets(code: &Code, ty: TypeIdx, offsets: &mut Vec<u32>) -> (usize, u32) {
+            let o = code[ty].type_obj().unwrap();
+            let (nfields, super_size) = if let Some(ty) = o.super_ {
+                fill_offsets(code, ty, offsets)
+            } else {
+                (
+                    0,
+                    if matches!(code[ty], HLType::Struct(_)) {
+                        8
+                    } else {
+                        0
+                    },
+                )
+            };
+
+            let mut size = super_size;
+            for (i, (str_idx, type_idx)) in o.fields.iter().enumerate() {
+                let byte_size = code[*type_idx].cranelift_type().bytes();
+                if (size % byte_size) != 0 {
+                    size += (size % byte_size);
+                }
+                offsets.push(byte_size);
+                size += byte_size;
+            }
+
+            (nfields + o.fields.len(), size)
+        }
+
+        let (nfields, size) = fill_offsets(self.code, ty, &mut offsets);
+        let offset = offsets[field_idx];
+        self.field_offsets.insert(ty, offsets);
+        Some(offset)
     }
 
     pub fn ensure_block(&mut self, pos: usize) -> Block {
@@ -362,12 +415,109 @@ impl<'a> EmitCtx<'a> {
                     self.def_var(dst.var(), val);
                 }
                 OpCode::SetGlobal { idx, val } => todo!(),
-                OpCode::Field { dst, obj, fid } => todo!(),
-                OpCode::SetField { obj, fid, val } => todo!(),
-                OpCode::GetThis { dst, fid } => todo!(),
-                OpCode::SetThis { fid, val } => todo!(),
-                OpCode::DynGet { dst, obj, str_idx } => todo!(),
-                OpCode::DynSet { obj, str_idx, val } => todo!(),
+                OpCode::Field { dst, obj, fid } => {
+                    match &self.code[self.fun[*obj]] {
+                        HLType::Struct(_) | HLType::Object(_) => {
+                            let offset = self
+                                .lookup_field_offset(self.fun[*obj], fid.0 as usize)
+                                .unwrap();
+                            let obj = self.use_var(obj.var());
+                            let ty = self.reg_type(dst).cranelift_type();
+                            let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
+                            self.def_var(dst.var(), val);
+                        }
+                        HLType::Virtual(virt) => {
+                            //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
+                            //  if( hl_vfields(obj)[fid] )
+                            //      *hl_vfields(obj)[fid] = val;
+                            //  else
+                            //      hl_dyn_set(obj,hash(field),vt,val)
+
+                            let obj_val = self.use_var(obj.var());
+                            let field_addr = self.ins().iadd_imm(
+                                obj_val,
+                                size_of::<vvirtual>() as i64
+                                    + (fid.0 as usize * size_of::<usize>()) as i64,
+                            );
+
+                            let next_block = self.next_block();
+                            self.emit_brif(
+                                field_addr,
+                                |this| {
+                                    let ty = this.reg_type(dst).cranelift_type();
+                                    let val = this.ins().load(ty, MemFlags::new(), obj_val, 0);
+                                    this.def_var(dst.var(), val);
+                                },
+                                |this| {
+                                    this.emit_dyn_get(dst, obj, virt.fields[fid.0 as usize].0);
+                                },
+                                next_block,
+                            );
+                        }
+                        _ => panic!(),
+                    }
+                }
+                OpCode::SetField { obj, fid, val } => match &self.code[self.fun[*obj]] {
+                    HLType::Struct(_) | HLType::Object(_) => {
+                        let offset = self
+                            .lookup_field_offset(self.fun[*obj], fid.0 as usize)
+                            .unwrap();
+                        let val = self.use_var(val.var());
+                        let obj = self.use_var(obj.var());
+                        self.ins().store(MemFlags::new(), val, obj, offset as i32);
+                    }
+                    HLType::Virtual(virt) => {
+                        //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
+                        //  if( hl_vfields(obj)[fid] )
+                        //      *hl_vfields(obj)[fid] = val;
+                        //  else
+                        //      hl_dyn_set(obj,hash(field),vt,val)
+
+                        let obj_val = self.use_var(obj.var());
+                        let val_val = self.use_var(val.var());
+                        let field_addr = self.ins().iadd_imm(
+                            obj_val,
+                            size_of::<vvirtual>() as i64
+                                + (fid.0 as usize * size_of::<usize>()) as i64,
+                        );
+
+                        let next_block = self.next_block();
+                        self.emit_brif(
+                            field_addr,
+                            |this| {
+                                this.ins().store(MemFlags::new(), val_val, field_addr, 0);
+                            },
+                            |this| {
+                                this.emit_dyn_set(obj, virt.fields[fid.0 as usize].0, val);
+                            },
+                            next_block,
+                        );
+                    }
+                    _ => panic!(),
+                },
+                OpCode::GetThis { dst, fid } => {
+                    let offset = self
+                        .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
+                        .unwrap();
+                    let obj = self.use_var(Reg(0).var());
+                    let ty = self.code[self.fun[*dst]].cranelift_type();
+                    let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
+                    self.def_var(dst.var(), val);
+                }
+                OpCode::SetThis { fid, val } => {
+                    let offset = self
+                        .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
+                        .unwrap();
+                    let val = self.use_var(val.var());
+                    let obj = self.use_var(Reg(0).var());
+                    self.ins().store(MemFlags::new(), val, obj, offset as i32);
+                }
+                OpCode::DynGet { dst, obj, str_idx } => {
+                    self.emit_dyn_get(dst, obj, *str_idx);
+                }
+                OpCode::DynSet { obj, str_idx, val } => {
+                    self.emit_dyn_set(obj, *str_idx, val);
+                }
                 OpCode::JTrue { val, offset } | OpCode::JNotNull { val, offset } => {
                     let block_then_label = self.block_for_offset(offset);
                     let block_else_label = self.next_block();
@@ -463,8 +613,12 @@ impl<'a> EmitCtx<'a> {
                     self.switch_to_block(next_block);
                 }
                 OpCode::Ret(reg) => {
-                    let val = self.use_var(reg.var());
-                    self.ins().return_(&[val]);
+                    if self.reg_type(reg).is_void() {
+                        self.ins().return_(&[]);
+                    } else {
+                        let val = self.use_var(reg.var());
+                        self.ins().return_(&[val]);
+                    }
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
                 }
@@ -488,12 +642,36 @@ impl<'a> EmitCtx<'a> {
                         let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
                         let ptr_ty = self.m.isa().pointer_type();
                         let val = self.ins().global_value(ptr_ty, gv);
-                        let func_ref = self.m.declare_func_in_func(self.idxs.native_calls["hl_alloc_obj"], self.builder.func);
+                        let func_ref = self.m.declare_func_in_func(
+                            self.idxs.native_calls["hl_alloc_obj"],
+                            self.builder.func,
+                        );
                         let inst = self.ins().call(func_ref, &[val]);
-                        self.builder.def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                        self.builder
+                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
                     }
-                    HLType::Dynobj => {}
-                    HLType::Virtual(_) => {}
+                    HLType::Dynobj => {
+                        let func_ref = self.m.declare_func_in_func(
+                            self.idxs.native_calls["hl_alloc_dynobj"],
+                            self.builder.func,
+                        );
+                        let inst = self.ins().call(func_ref, &[]);
+                        self.builder
+                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                    }
+                    HLType::Virtual(_) => {
+                        let ty_id = self.idxs.types[&self.fun[*dst]];
+                        let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
+                        let ptr_ty = self.m.isa().pointer_type();
+                        let val = self.ins().global_value(ptr_ty, gv);
+                        let func_ref = self.m.declare_func_in_func(
+                            self.idxs.native_calls["hl_alloc_virtual"],
+                            self.builder.func,
+                        );
+                        let inst = self.ins().call(func_ref, &[val]);
+                        self.builder
+                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                    }
                     _ => panic!("invalid ONew"),
                 },
                 OpCode::ArraySize { dst, arr } => todo!(),
@@ -529,6 +707,107 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
         }
+    }
+
+    fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
+        let obj_val = self.use_var(obj.var());
+        let hash_ref = self
+            .m
+            .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
+        let field_name_data_id = self.idxs.ustr[&field_name];
+        let field_name_global_value = self
+            .m
+            .declare_data_in_func(field_name_data_id, self.builder.func);
+        let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
+        let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
+        let hashed_field = self.builder.inst_results(hash_inst)[0];
+
+        let dyn_get_name = match &self.code[self.fun[*dst]] {
+            HLType::Float32 => "hl_dyn_getf",
+            HLType::Float64 => "hl_dyn_getd",
+            HLType::Int64 => "hl_dyn_geti64",
+            HLType::Boolean | HLType::UInt8 | HLType::UInt16 | HLType::Int32 => "hl_dyn_geti",
+            _ => "hl_dyn_getp",
+        };
+
+        let dyn_get_ref = self
+            .m
+            .declare_func_in_func(self.idxs.native_calls[dyn_get_name], self.builder.func);
+        let virt_ty = self
+            .m
+            .declare_data_in_func(self.idxs.types[&self.fun[*obj]], self.builder.func);
+        let virt_ty_val = self.ins().global_value(types::I64, virt_ty);
+        let inst = match &self.code[self.fun[*dst]] {
+            HLType::Float32 | HLType::Float64 | HLType::Int64 => {
+                self.ins().call(dyn_get_ref, &[obj_val, hashed_field])
+            }
+            _ => self
+                .ins()
+                .call(dyn_get_ref, &[obj_val, hashed_field, virt_ty_val]),
+        };
+        let dst_val = self.inst_results(inst)[0];
+        self.def_var(dst.var(), dst_val);
+    }
+
+    fn emit_dyn_set(&mut self, obj: &Reg, field_name: UStrIdx, val: &Reg) {
+        let obj_val = self.use_var(obj.var());
+        let val_val = self.use_var(val.var());
+        let hash_ref = self
+            .m
+            .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
+        let field_name_data_id = self.idxs.ustr[&field_name];
+        let field_name_global_value = self
+            .m
+            .declare_data_in_func(field_name_data_id, self.builder.func);
+        let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
+        let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
+        let hashed_field = self.builder.inst_results(hash_inst)[0];
+
+        let dyn_set_name = match &self.code[self.fun[*val]] {
+            HLType::Float32 => "hl_dyn_setf",
+            HLType::Float64 => "hl_dyn_setd",
+            HLType::Int64 => "hl_dyn_seti64",
+            HLType::Boolean | HLType::UInt8 | HLType::UInt16 | HLType::Int32 => "hl_dyn_seti",
+            _ => "hl_dyn_setp",
+        };
+        let dyn_set_ref = self
+            .m
+            .declare_func_in_func(self.idxs.native_calls[dyn_set_name], self.builder.func);
+        let virt_ty = self
+            .m
+            .declare_data_in_func(self.idxs.types[&self.fun[*obj]], self.builder.func);
+        let virt_ty_val = self.ins().global_value(types::I64, virt_ty);
+        match &self.code[self.fun[*val]] {
+            HLType::Float32 | HLType::Float64 | HLType::Int64 => self
+                .ins()
+                .call(dyn_set_ref, &[obj_val, hashed_field, val_val]),
+            _ => self
+                .ins()
+                .call(dyn_set_ref, &[obj_val, hashed_field, virt_ty_val, val_val]),
+        };
+    }
+
+    fn emit_brif(
+        &mut self,
+        val: Value,
+        then_cb: impl FnOnce(&mut EmitCtx<'_>),
+        else_cb: impl FnOnce(&mut EmitCtx<'_>),
+        next_block: Block,
+    ) {
+        let block_then_label = self.create_block();
+        let block_else_label = self.create_block();
+        self.ins()
+            .brif(val, block_then_label, &[], block_else_label, &[]);
+        self.seal_block(block_then_label);
+        self.seal_block(block_else_label);
+
+        self.switch_to_block(block_then_label);
+        then_cb(self);
+        self.ins().jump(next_block, &[]);
+        self.switch_to_block(block_else_label);
+        else_cb(self);
+        self.ins().jump(next_block, &[]);
+        self.switch_to_block(next_block);
     }
 
     pub fn block_for_offset(&mut self, offset: &Idx) -> Block {

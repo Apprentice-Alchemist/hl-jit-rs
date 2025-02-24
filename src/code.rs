@@ -166,7 +166,7 @@ impl Readable for GlobalIdx {
 #[derive(Clone)]
 pub struct TypeObj {
     pub name: UStrIdx,
-    pub super_: isize,
+    pub super_: Option<TypeIdx>,
     pub global: usize,
     pub fields: Vec<(UStrIdx, TypeIdx)>,
     pub protos: Vec<(UStrIdx, usize, isize)>,
@@ -237,7 +237,7 @@ impl HLType {
     pub fn cranelift_type(&self) -> cranelift::prelude::Type {
         use cranelift::prelude::types;
         match self {
-            Self::Void => types::INVALID,
+            Self::Void => panic!("HVOID should not be used in CLIR"),
             Self::UInt8 => types::I8,
             Self::UInt16 => types::I16,
             Self::Int32 => types::I32,
@@ -259,15 +259,33 @@ impl HLType {
             Self::Null(_) => types::I64,
             Self::Method(_) => types::I64,
             Self::Struct(_) => types::I64,
-            Self::Packed(_) => types::I64,
+            Self::Packed(_) => panic!("HPACKED should not be used in CLIR"),
             Self::Guid => types::I64,
         }
+    }
+
+    pub fn type_obj(&self) -> Option<&TypeObj> {
+        match self {
+            Self::Struct(obj) | Self::Object(obj) => Some(obj),
+            _ => None
+        }
+    }
+
+    pub fn is_void(&self) -> bool {
+        matches!(self, Self::Void)
     }
 }
 
 fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
     let name = r.r()?;
-    let super_ = r.idx()?;
+    let super_ = {
+        let val = r.idx()?;
+        if val.is_positive() {
+            Some(TypeIdx(val as usize))
+        } else {
+            None
+        }
+    };
     let global = r.udx()?;
     let nfields = r.udx()?;
     let nproto = r.udx()?;

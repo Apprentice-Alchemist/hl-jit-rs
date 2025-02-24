@@ -13,6 +13,7 @@ mod sys {
     #![allow(non_snake_case)]
     #![allow(improper_ctypes, reason = "triggered by bindgen generated u128")]
     #![allow(dead_code)]
+    #![allow(unsafe_op_in_unsafe_fn)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
