@@ -6,7 +6,7 @@ use cranelift::prelude::*;
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
-    sys::{hl_type, vvirtual},
+    sys::{hl_type, varray, vvirtual},
 };
 
 use super::{CodegenCtx, Indexes};
@@ -628,14 +628,71 @@ impl<'a> EmitCtx<'a> {
                 OpCode::NullCheck(reg) => todo!(),
                 OpCode::Trap { dst, jump_off } => (), // TODO
                 OpCode::EndTrap { something } => (),  // TODO
-                OpCode::GetI8 { dst, mem, val } => todo!(),
-                OpCode::GetI16 { dst, mem, val } => todo!(),
-                OpCode::GetMem { dst, mem, val } => todo!(),
-                OpCode::GetArray { dst, mem, val } => todo!(),
-                OpCode::SetI8 { mem, offset, val } => todo!(),
-                OpCode::SetI16 { mem, offset, val } => todo!(),
-                OpCode::SetMem { mem, offset, val } => todo!(),
-                OpCode::SetArray { mem, offset, val } => todo!(),
+                OpCode::GetI8 { dst, mem, offset } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
+                    self.def_var(dst.var(), val);
+                }
+                OpCode::GetI16 { dst, mem, offset } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
+                    self.def_var(dst.var(), val);
+                }
+                OpCode::GetMem { dst, mem, offset } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let ty = self.reg_type(dst).cranelift_type();
+                    let val = self.ins().load(ty, MemFlags::new(), ptr, 0);
+                    self.def_var(dst.var(), val);
+                }
+                OpCode::GetArray { dst, mem, offset } => {
+                    let ty = self.reg_type(dst).cranelift_type();
+
+                    let arr_addr = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
+                    let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
+                    let val_addr = self.ins().iadd(mem_addr, offset);
+                    let val = self.ins().load(ty, MemFlags::trusted(), val_addr, 0);
+                    self.def_var(dst.var(), val);
+                }
+                OpCode::SetI8 { mem, offset, val } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let val = self.use_var(val.var());
+                    self.ins().istore8(MemFlags::new(), val, ptr, 0);
+                }
+                OpCode::SetI16 { mem, offset, val } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let val = self.use_var(val.var());
+                    self.ins().istore16(MemFlags::new(), val, ptr, 0);
+                }
+                OpCode::SetMem { mem, offset, val } => {
+                    let mem = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let ptr = self.ins().iadd(mem, offset);
+                    let val = self.use_var(val.var());
+                    self.ins().store(MemFlags::new(), val, ptr, 0);
+                }
+                OpCode::SetArray { mem, offset, val } => {
+                    let ty = self.reg_type(val).cranelift_type();
+
+                    let arr_addr = self.use_var(mem.var());
+                    let offset = self.use_var(offset.var());
+                    let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
+                    let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
+                    let val_addr = self.ins().iadd(mem_addr, offset);
+                    let val = self.use_var(val.var());
+                    self.ins().store( MemFlags::trusted(), val, val_addr, 0);
+                }
                 OpCode::New { dst } => match self.reg_type(dst) {
                     HLType::Object(_) | HLType::Struct(_) => {
                         let ty_id = self.idxs.types[&self.fun[*dst]];
@@ -674,7 +731,11 @@ impl<'a> EmitCtx<'a> {
                     }
                     _ => panic!("invalid ONew"),
                 },
-                OpCode::ArraySize { dst, arr } => todo!(),
+                OpCode::ArraySize { dst, arr } => {
+                    let arr = self.use_var(arr.var());
+                    let val = self.ins().load(types::I32, MemFlags::trusted(), arr, offset_of!(varray, size) as i32);
+                    self.def_var(dst.var(), val);
+                },
                 OpCode::Type { dst, idx } => todo!(),
                 OpCode::GetType { dst, val } => todo!(),
                 OpCode::GetTid { dst, val } => todo!(),

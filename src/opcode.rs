@@ -361,22 +361,22 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
         74 => GetI8 {
             dst: r.r()?,
             mem: r.r()?,
-            val: r.r()?,
+            offset: r.r()?,
         },
         75 => GetI16 {
             dst: r.r()?,
             mem: r.r()?,
-            val: r.r()?,
+            offset: r.r()?,
         },
         76 => GetMem {
             dst: r.r()?,
             mem: r.r()?,
-            val: r.r()?,
+            offset: r.r()?,
         },
         77 => GetArray {
             dst: r.r()?,
             mem: r.r()?,
-            val: r.r()?,
+            offset: r.r()?,
         },
         78 => SetI8 {
             mem: r.r()?,
@@ -799,22 +799,22 @@ pub enum OpCode {
     GetI8 {
         dst: Reg,
         mem: Reg,
-        val: Reg,
+        offset: Reg,
     },
     GetI16 {
         dst: Reg,
         mem: Reg,
-        val: Reg,
+        offset: Reg,
     },
     GetMem {
         dst: Reg,
         mem: Reg,
-        val: Reg,
+        offset: Reg,
     },
     GetArray {
         dst: Reg,
         mem: Reg,
-        val: Reg,
+        offset: Reg,
     },
     SetI8 {
         mem: Reg,
