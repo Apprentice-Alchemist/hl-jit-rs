@@ -35,16 +35,35 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("hl_alloc_dynobj", &[], &[types::I64]),
     ("hl_alloc_virtual", &[types::I64], &[types::I64]),
     ("hl_hash", &[types::I64], &[types::I32]),
-    ("hl_dyn_seti", &[types::I64, types::I32, types::I64, types::I32], &[]),
+    (
+        "hl_dyn_seti",
+        &[types::I64, types::I32, types::I64, types::I32],
+        &[],
+    ),
     ("hl_dyn_seti64", &[types::I64, types::I32, types::I64], &[]),
-    ("hl_dyn_setp", &[types::I64, types::I32, types::I64, types::I64], &[]),
+    (
+        "hl_dyn_setp",
+        &[types::I64, types::I32, types::I64, types::I64],
+        &[],
+    ),
     ("hl_dyn_setf", &[types::I64, types::I32, types::F32], &[]),
     ("hl_dyn_setd", &[types::I64, types::I32, types::F64], &[]),
-    ("hl_dyn_geti", &[types::I64, types::I32, types::I64], &[types::I32]),
+    (
+        "hl_dyn_geti",
+        &[types::I64, types::I32, types::I64],
+        &[types::I32],
+    ),
     ("hl_dyn_geti64", &[types::I64, types::I32], &[types::I64]),
-    ("hl_dyn_getp", &[types::I64, types::I32, types::I64], &[types::I64]),
+    (
+        "hl_dyn_getp",
+        &[types::I64, types::I32, types::I64],
+        &[types::I64],
+    ),
     ("hl_dyn_getf", &[types::I64, types::I32], &[types::F32]),
     ("hl_dyn_getd", &[types::I64, types::I32], &[types::F64]),
+    ("hl_alloc_enum", &[types::I64, types::I32], &[types::I64]),
+    ("hl_throw", &[types::I64], &[]),
+    ("hl_rethrow", &[types::I64], &[]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -82,7 +101,7 @@ impl<'a> CodegenCtx<'a> {
         build_native_calls(self.m, &mut self.idxs);
         for fun in &code.functions {
             let mut signature = self.m.make_signature();
-            fill_signature(&code, &mut signature, fun.ty);
+            fill_signature_ty(&code, &mut signature, fun.ty);
             let id = self.m.declare_anonymous_function(&signature).unwrap();
             self.idxs.fn_map.insert(fun.idx, id);
         }
@@ -101,8 +120,11 @@ impl<'a> CodegenCtx<'a> {
 
             let symbol_name = format!("{lib}_{name}");
             let mut signature = self.m.make_signature();
-            fill_signature(&code, &mut signature, *ty);
-            let id = self.m.declare_function(&symbol_name, Linkage::Import, &signature).unwrap();
+            fill_signature_ty(&code, &mut signature, *ty);
+            let id = self
+                .m
+                .declare_function(&symbol_name, Linkage::Import, &signature)
+                .unwrap();
             self.idxs.fn_map.insert(*fun_idx, id);
         }
         for fun in code.functions.iter() {
@@ -112,19 +134,22 @@ impl<'a> CodegenCtx<'a> {
     }
 }
 
-fn fill_signature(code: &Code, sig: &mut Signature, ty: TypeIdx) {
+fn fill_signature_ty(code: &Code, sig: &mut Signature, ty: TypeIdx) {
     let (args, ret) = match code.get_type(ty) {
         HLType::Function(TypeFun { args, ret }) => (args, ret),
         HLType::Method(TypeFun { args, ret }) => (args, ret),
         _ => panic!(),
     };
+    fill_signature(code, sig, args, *ret);
+}
+
+fn fill_signature(code: &Code, sig: &mut Signature, args: &[TypeIdx], ret: TypeIdx) {
     sig.params.extend(
         args.iter()
             .map(|idx| AbiParam::new(code.get_type(*idx).cranelift_type())),
     );
-    let ret_ty = code.get_type(*ret);
+    let ret_ty = code.get_type(ret);
     if !ret_ty.is_void() {
-        sig.returns
-            .push(AbiParam::new(ret_ty.cranelift_type()));
+        sig.returns.push(AbiParam::new(ret_ty.cranelift_type()));
     }
 }

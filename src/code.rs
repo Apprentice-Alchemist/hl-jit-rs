@@ -105,15 +105,15 @@ fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
     Ok(string_vec)
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct TypeIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct UStrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct StrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct FunIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct GlobalIdx(pub usize);
 
 pub trait Readable {
@@ -163,7 +163,7 @@ impl Readable for GlobalIdx {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypeObj {
     pub name: UStrIdx,
     pub super_: Option<TypeIdx>,
@@ -173,25 +173,25 @@ pub struct TypeObj {
     pub bindings: Vec<(usize, usize)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypeFun {
     pub args: Vec<TypeIdx>,
     pub ret: TypeIdx,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypeEnum {
     pub name: UStrIdx,
     pub global_value: usize,
     pub constructs: Vec<(UStrIdx, Vec<TypeIdx>)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypeVirtual {
     pub fields: Vec<(UStrIdx, TypeIdx)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum HLType {
     Void,
     UInt8,

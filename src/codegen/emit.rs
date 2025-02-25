@@ -1,8 +1,11 @@
 use std::{collections::BTreeMap, mem::offset_of};
 
+use cranelift::codegen::ir::{BlockCall, Inst, SourceLoc, ValueListPool};
+use cranelift::frontend::Switch;
 use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
 
+use crate::code::TypeFun;
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
@@ -15,6 +18,13 @@ pub fn emit_fun(ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
     let mut emit_ctx = EmitCtx::new(ctx, code, fun);
     emit_ctx.translate_body();
     emit_ctx.finish();
+    if let Err(e) = ctx.ctx.verify(ctx.m.isa()) {
+        eprintln!(
+            "{}",
+            cranelift::codegen::print_errors::pretty_verifier_error(&ctx.ctx.func, None, e)
+        );
+        std::process::exit(1);
+    }
     ctx.m
         .define_function(ctx.idxs.fn_map[&fun.idx], &mut ctx.ctx)
         .unwrap();
@@ -73,11 +83,14 @@ impl<'a> EmitCtx<'a> {
                 let t = code[*ty].cranelift_type();
                 regs.insert(
                     Reg(idx),
-                    (builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size: t.bytes(),
-                        align_shift: 0,
-                    }), t),
+                    (
+                        builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: t.bytes(),
+                            align_shift: 0,
+                        }),
+                        t,
+                    ),
                 );
                 // builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
             }
@@ -94,7 +107,9 @@ impl<'a> EmitCtx<'a> {
         }
 
         let mut blocks = BTreeMap::new();
-        blocks.insert(0, entry_block);
+        if !matches!(fun.opcodes[0], OpCode::Label) {
+            blocks.insert(0, entry_block);
+        }
 
         EmitCtx {
             m,
@@ -119,6 +134,12 @@ impl<'a> EmitCtx<'a> {
     fn store_reg(&mut self, r: &Reg, val: Value) {
         let (slot, ty) = self.regs[r];
         self.ins().stack_store(val, slot, 0);
+    }
+
+    fn trap(&mut self, code: &OpCode) {
+        let value = self.ins().iconst(types::I64, 0);
+        self.ins()
+            .trapz(value, TrapCode::unwrap_user(code.discriminant()));
     }
 
     fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
@@ -163,10 +184,10 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn ensure_block(&mut self, pos: usize) -> Block {
-        *self
+        (*self
             .blocks
             .entry(pos)
-            .or_insert_with(|| self.builder.create_block())
+            .or_insert_with(|| self.builder.create_block()))
     }
 
     pub fn reg_type(&self, reg: &Reg) -> &HLType {
@@ -174,18 +195,33 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn translate_body(&mut self) {
+        println!("function body, length: {}", self.fun.opcodes.len());
+        let mut has_switched = true;
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
             self.pos = pos;
-            if let Some(block) = self.blocks.get(&pos).map(|b| *b) {
-                if let Some(current_block) = self.current_block() {
-                    if block != current_block {
-                        self.ins().jump(block, &[]);
-                        self.switch_to_block(block);
+            if has_switched {
+                has_switched = false;
+            } else {
+                if let Some(block) = self.blocks.get(&pos).map(|b| *b) {
+                    if let Some(current_block) = self.current_block() {
+                        if block != current_block {
+                            if !self.builder.func.dfg.insts
+                                [Inst::new(self.builder.func.dfg.num_insts() - 1)]
+                            .opcode()
+                            .is_terminator()
+                            {
+                                self.ins().jump(block, &[]);
+                            }
+                            self.switch_to_block(block);
+                            // panic!()
+                        }
+                    } else {
+                        unreachable!()
                     }
-                } else {
-                    unreachable!()
                 }
             }
+            println!("  {op:?} in block {:?}", self.current_block().unwrap());
+            self.set_srcloc(SourceLoc::new(pos.try_into().unwrap()));
             match op {
                 OpCode::Mov { dst, src } => {
                     let val = self.load_reg(src);
@@ -209,7 +245,7 @@ impl<'a> EmitCtx<'a> {
                     let val = self.ins().iconst(types::I8, *val as i64);
                     self.store_reg(dst, val)
                 }
-                OpCode::Bytes { dst, idx } => todo!(),
+                OpCode::Bytes { dst, idx } => self.trap(op),
                 OpCode::String { dst, idx } => {
                     let gval = self
                         .m
@@ -378,8 +414,9 @@ impl<'a> EmitCtx<'a> {
                         .m
                         .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
                     let i = self.ins().call(f_ref, &[]);
-                    let val = self.inst_results(i)[0];
-                    self.store_reg(dst, val);
+                    if !self.reg_type(dst).is_void() {
+                        self.store_reg(dst, self.builder.inst_results(i)[0]);
+                    }
                 }
                 OpCode::Call1 { dst, f, args }
                 | OpCode::Call2 { dst, f, args }
@@ -394,7 +431,9 @@ impl<'a> EmitCtx<'a> {
                         .map(|r| self.load_reg(r))
                         .collect::<Vec<Value>>();
                     let i = self.ins().call(f_ref, args);
-                    self.store_reg(dst, self.builder.inst_results(i)[0]);
+                    if !self.reg_type(dst).is_void() {
+                        self.store_reg(dst, self.builder.inst_results(i)[0]);
+                    }
                 }
 
                 OpCode::CallMethod { dst, fid, args } => match self.reg_type(&args[0]) {
@@ -413,21 +452,30 @@ impl<'a> EmitCtx<'a> {
                             proto_val,
                             (fid.0 as usize * size_of::<*mut u8>()) as i32,
                         );
-                        let sig = self.m.make_signature();
-                        todo!(); // super::fill_signature(code, &mut sig, ty);
+                        let mut sig = self.m.make_signature();
+                        super::fill_signature(
+                            self.code,
+                            &mut sig,
+                            &args
+                                .iter()
+                                .map(|reg| self.fun[*reg])
+                                .collect::<Vec<TypeIdx>>(),
+                            self.fun[*dst],
+                        );
                         let sig_ref = self.import_signature(sig);
-                        self.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                        let i = self.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                        if !self.reg_type(dst).is_void() {
+                            self.store_reg(dst, self.builder.inst_results(i)[0]);
+                        }
                     }
-                    HLType::Virtual(virt) => {
-                        todo!()
-                    }
+                    HLType::Virtual(virt) => self.trap(op),
                     _ => unimplemented!("OCallMethod only works with HObj or HVirt"),
                 },
-                OpCode::CallThis { dst, fid, args } => todo!(),
-                OpCode::CallClosure { dst, closure, args } => todo!(),
-                OpCode::StaticClosure { dst, fid } => todo!(),
-                OpCode::InstanceClosure { dst, obj, idx } => todo!(),
-                OpCode::VirtualClosure { dst, obj, idx } => todo!(),
+                OpCode::CallThis { dst, fid, args } => self.trap(op),
+                OpCode::CallClosure { dst, closure, args } => self.trap(op),
+                OpCode::StaticClosure { dst, fid } => self.trap(op),
+                OpCode::InstanceClosure { dst, obj, idx } => self.trap(op),
+                OpCode::VirtualClosure { dst, obj, idx } => self.trap(op),
                 OpCode::GetGlobal { dst, idx } => {
                     let global_value = self
                         .m
@@ -437,7 +485,7 @@ impl<'a> EmitCtx<'a> {
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
                     self.store_reg(dst, val);
                 }
-                OpCode::SetGlobal { idx, val } => todo!(),
+                OpCode::SetGlobal { idx, val } => self.trap(op),
                 OpCode::Field { dst, obj, fid } => {
                     match &self.code[self.fun[*obj]] {
                         HLType::Struct(_) | HLType::Object(_) => {
@@ -608,11 +656,19 @@ impl<'a> EmitCtx<'a> {
                     let block = self.block_for_offset(offset);
                     self.ins().jump(block, &[]);
                 }
-                OpCode::ToDyn { dst, val } => todo!(),
+                OpCode::ToDyn { dst, val } => self.trap(op),
                 OpCode::ToSFloat { dst, val } => {
+                    let src_ty = self.reg_type(val).cranelift_type();
+                    let dst_ty = self.reg_type(dst).cranelift_type();
                     let val = self.load_reg(val);
-                    let ty = self.reg_type(dst).cranelift_type();
-                    let val = self.ins().fcvt_from_sint(ty, val);
+                    let val = match (src_ty, dst_ty) {
+                        (types::F32, types::F64) => self.ins().fpromote(types::F64, val),
+                        (types::F64, types::F32) => self.ins().fdemote(types::F32, val),
+                        (a, b) if a.is_int() && b.is_float() => {
+                            self.ins().fcvt_from_sint(dst_ty, val)
+                        }
+                        _ => panic!("Invalid OToSFloat"),
+                    };
                     self.store_reg(dst, val)
                 }
                 OpCode::ToUFloat { dst, val } => {
@@ -622,18 +678,34 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::ToInt { dst, val } => {
+                    let src_ty = self.reg_type(val).cranelift_type();
+                    let dst_ty = self.reg_type(dst).cranelift_type();
                     let val = self.load_reg(val);
-                    let ty = self.reg_type(dst).cranelift_type();
-                    let val = self.builder.ins().fcvt_to_sint_sat(ty, val);
+                    let val = if src_ty.is_int() && dst_ty.is_int() {
+                        if src_ty.wider_or_equal(dst_ty) {
+                            self.ins().ireduce(dst_ty, val)
+                        } else {
+                            self.ins().sextend(dst_ty, val)
+                        }
+                    } else {
+                        if dst_ty.bytes() < 4 {
+                            let val = self.ins().fcvt_to_sint_sat(types::I32, val);
+                            self.ins().ireduce(dst_ty, val)
+                        } else {
+                            self.ins().fcvt_to_sint_sat(dst_ty, val)
+                        }
+                    };
                     self.store_reg(dst, val)
                 }
-                OpCode::SafeCast { dst, val } => todo!(),
-                OpCode::UnsafeCast { dst, val } => todo!(),
-                OpCode::ToVirtual { dst, val } => todo!(),
+                OpCode::SafeCast { dst, val } => self.trap(op),
+                OpCode::UnsafeCast { dst, val } => self.trap(op),
+                OpCode::ToVirtual { dst, val } => self.trap(op),
                 OpCode::Label => {
-                    let next_block = self.ensure_block(pos);
-                    self.ins().jump(next_block, &[]);
-                    self.switch_to_block(next_block);
+                    if !self.blocks.contains_key(&pos) {
+                        let next_block = self.ensure_block(pos);
+                        self.ins().jump(next_block, &[]);
+                        self.switch_to_block(next_block);
+                    }
                 }
                 OpCode::Ret(reg) => {
                     if self.reg_type(reg).is_void() {
@@ -645,15 +717,44 @@ impl<'a> EmitCtx<'a> {
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
                 }
-                OpCode::Throw(reg) => todo!(),
-                OpCode::Rethrow(reg) => todo!(),
-                OpCode::Switch { val, cases, end } => todo!(),
-                OpCode::NullCheck(reg) => todo!(),
-                OpCode::Trap { dst, jump_off } => (), // TODO
-                OpCode::EndTrap { something } => (),  // TODO
+                OpCode::Throw(reg) => {
+                    let val = self.load_reg(reg);
+                    let id = self.idxs.native_calls["hl_rethrow"];
+                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    self.ins().call(f, &[val]);
+                    self.ins().trap(TrapCode::unwrap_user(1));
+                }
+                OpCode::Rethrow(reg) => {
+                    let val = self.load_reg(reg);
+                    let id = self.idxs.native_calls["hl_throw"];
+                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    self.ins().call(f, &[val]);
+                    self.ins().trap(TrapCode::unwrap_user(1));
+                }
+                OpCode::Switch { val, cases, end } => {
+                    let val = self.load_reg(val);
+                    let mut switch = Switch::new();
+                    for (val, case) in cases.iter().enumerate() {
+                        switch.set_entry(val as u128, self.block_for_offset(case));
+                    }
+                    let end_block = self.block_for_offset(end);
+                    switch.emit(self, val, end_block);
+                    let next_block = self.next_block();
+                    self.switch_to_block(next_block);
+                }
+                OpCode::NullCheck(reg) => self.trap(op),
+                OpCode::Trap { dst, jump_off } => {
+                    self.block_for_offset(jump_off);
+                    self.trap(op)
+                } // TODO
+                OpCode::EndTrap { something } => {
+                    self.block_for_offset(something);
+                    self.trap(op)
+                } // TODO
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
                     self.store_reg(dst, val);
@@ -661,6 +762,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::GetI16 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
                     self.store_reg(dst, val);
@@ -668,6 +770,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::GetMem { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.ins().load(ty, MemFlags::new(), ptr, 0);
@@ -678,6 +781,7 @@ impl<'a> EmitCtx<'a> {
 
                     let arr_addr = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
                     let val_addr = self.ins().iadd(mem_addr, offset);
@@ -687,6 +791,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::SetI8 { mem, offset, val } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.load_reg(val);
                     self.ins().istore8(MemFlags::new(), val, ptr, 0);
@@ -694,6 +799,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::SetI16 { mem, offset, val } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.load_reg(val);
                     self.ins().istore16(MemFlags::new(), val, ptr, 0);
@@ -701,6 +807,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::SetMem { mem, offset, val } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.load_reg(val);
                     self.ins().store(MemFlags::new(), val, ptr, 0);
@@ -710,6 +817,7 @@ impl<'a> EmitCtx<'a> {
 
                     let arr_addr = self.load_reg(mem);
                     let offset = self.load_reg(offset);
+                    let offset = self.ins().sextend(types::I64, offset);
                     let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
                     let val_addr = self.ins().iadd(mem_addr, offset);
@@ -761,9 +869,40 @@ impl<'a> EmitCtx<'a> {
                     );
                     self.store_reg(dst, val);
                 }
-                OpCode::Type { dst, idx } => todo!(),
-                OpCode::GetType { dst, val } => todo!(),
-                OpCode::GetTid { dst, val } => todo!(),
+                OpCode::Type { dst, idx } => {
+                    let ty_id = self.idxs.types[idx];
+                    let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, gv);
+                    self.store_reg(dst, ty_val);
+                }
+                OpCode::GetType { dst, val } => {
+                    let val = self.load_reg(val);
+                    let next_block = self.next_block();
+                    self.emit_brif(
+                        val,
+                        |ecx| {
+                            let ty_val = ecx.ins().load(types::I64, MemFlags::new(), val, 0);
+                            ecx.store_reg(dst, ty_val);
+                        },
+                        |ecx| {
+                            assert!(
+                                matches!(ecx.code[TypeIdx(0)], HLType::Void),
+                                "HVoid does not have index 0"
+                            );
+
+                            let ty_id = ecx.idxs.types[&TypeIdx(0)];
+                            let gv = ecx.m.declare_data_in_func(ty_id, ecx.builder.func);
+                            let ty_val = ecx.ins().global_value(types::I64, gv);
+                            ecx.store_reg(dst, ty_val);
+                        },
+                        next_block,
+                    );
+                }
+                OpCode::GetTid { dst, val } => {
+                    let val = self.load_reg(val);
+                    let kind_val = self.ins().load(types::I32, MemFlags::new(), val, 0);
+                    self.store_reg(dst, kind_val);
+                }
                 OpCode::Ref { dst, val } => {
                     let (stack_slot, _) = self.regs[val];
                     let val = self.ins().stack_addr(types::I64, stack_slot, 0);
@@ -787,28 +926,30 @@ impl<'a> EmitCtx<'a> {
                     dst,
                     construct_idx,
                     params,
-                } => todo!(),
-                OpCode::EnumAlloc { dst, idx } => todo!(),
-                OpCode::EnumIndex { dst, val } => todo!(),
+                } => self.trap(op),
+                OpCode::EnumAlloc { dst, idx } => self.trap(op),
+                OpCode::EnumIndex { dst, val } => self.trap(op),
                 OpCode::EnumField {
                     dst,
                     obj,
                     construct_idx,
                     field_idx,
-                } => todo!(),
+                } => self.trap(op),
                 OpCode::SetEnumField {
                     obj,
                     field_idx,
                     val,
-                } => todo!(),
-                OpCode::Assert => todo!(),
-                OpCode::RefData { dst, r } => todo!(),
-                OpCode::RefOffset { dst, r, off } => todo!(),
+                } => self.trap(op),
+                OpCode::Assert => self.trap(op),
+                OpCode::RefData { dst, r } => self.trap(op),
+                OpCode::RefOffset { dst, r, off } => self.trap(op),
                 OpCode::Nop => (),
                 OpCode::Prefetch { args } => panic!("unsupported instruction: OPrefetch"),
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
         }
+        dbg!(&self.blocks);
+        self.seal_all_blocks();
     }
 
     fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
@@ -955,6 +1096,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn finish(self) {
+        println!("{}", self.builder.func.display());
         self.builder.finalize();
     }
 }

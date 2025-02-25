@@ -3,10 +3,10 @@ use std::io;
 use cranelift::prelude::{EntityRef, Variable};
 
 use crate::{
-    code::{FunIdx, GlobalIdx, Readable, UStrIdx},
+    code::{FunIdx, GlobalIdx, Readable, TypeIdx, UStrIdx},
     Reader,
 };
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Reg(pub(crate) usize);
 
 impl Reg {
@@ -23,7 +23,7 @@ impl crate::code::Readable for Reg {
         Ok(Reg(r.idx()? as usize))
     }
 }
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Idx(pub isize);
 
 impl crate::code::Readable for Idx {
@@ -476,6 +476,8 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
     Ok(code)
 }
 
+#[repr(u8)]
+#[derive(Debug)]
 pub enum OpCode {
     Mov {
         dst: Reg,
@@ -846,7 +848,7 @@ pub enum OpCode {
     },
     Type {
         dst: Reg,
-        idx: Idx,
+        idx: TypeIdx,
     },
     GetType {
         dst: Reg,
@@ -910,4 +912,10 @@ pub enum OpCode {
     Asm {
         args: [Idx; 3],
     },
+}
+
+impl OpCode {
+    pub(crate) fn discriminant(&self) -> u8 {
+        unsafe { *(self as *const Self as *const u8) }
+    }
 }

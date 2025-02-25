@@ -6,7 +6,7 @@ use cranelift::{
 };
 
 use crate::{
-    code::{Code, HLType, TypeFun, TypeIdx, TypeVirtual, UStrIdx},
+    code::{Code, GlobalIdx, HLType, TypeFun, TypeIdx, TypeVirtual, UStrIdx},
     sys::{hl_obj_field, hl_type, hl_type_fun, hl_type_kind, hl_type_virtual},
 };
 
@@ -21,6 +21,11 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
     for idx in 0..code.strings.len() {
         let id = m.declare_anonymous_data(true, false)?;
         idxs.ustr.insert(UStrIdx(idx), id);
+    }
+
+    for idx in 0..code.globals.len() {
+        let id = m.declare_anonymous_data(true, false)?;
+        idxs.globals.insert(GlobalIdx(idx), id);
     }
 
     Ok(())
