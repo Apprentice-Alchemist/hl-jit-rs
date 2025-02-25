@@ -6,7 +6,7 @@ use crate::{
     code::{FunIdx, GlobalIdx, Readable, UStrIdx},
     Reader,
 };
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Reg(pub(crate) usize);
 
 impl Reg {

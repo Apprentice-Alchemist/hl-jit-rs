@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, mem::offset_of};
 
-use cranelift::module::Module;
 use cranelift::prelude::*;
+use cranelift::{codegen::ir::StackSlot, module::Module};
 
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
@@ -30,6 +30,7 @@ struct EmitCtx<'a> {
     // position of current HL opcode
     pos: usize,
     field_offsets: BTreeMap<TypeIdx, Vec<u32>>,
+    regs: BTreeMap<Reg, (StackSlot, Type)>,
 }
 
 impl<'a> std::ops::Deref for EmitCtx<'a> {
@@ -64,20 +65,32 @@ impl<'a> EmitCtx<'a> {
             .clone();
         ctx.func.signature = function_signature.clone();
 
+        let mut regs = BTreeMap::new();
+
         let mut builder = FunctionBuilder::new(&mut ctx.func, f_ctx);
         for (idx, ty) in fun.regs.iter().enumerate() {
             if !code[*ty].is_void() {
-                builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
+                let t = code[*ty].cranelift_type();
+                regs.insert(
+                    Reg(idx),
+                    (builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: t.bytes(),
+                        align_shift: 0,
+                    }), t),
+                );
+                // builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
             }
         }
 
         let entry_block = builder.create_block();
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
-
+        builder.append_block_params_for_function_params(entry_block);
         for (idx, arg) in function_signature.params.iter().enumerate() {
-            let value = builder.append_block_param(entry_block, arg.value_type);
-            builder.def_var(Variable::new(idx), value);
+            let value = builder.block_params(entry_block)[idx];
+            let (slot, _) = regs[&Reg(idx)];
+            builder.ins().stack_store(value, slot, 0);
         }
 
         let mut blocks = BTreeMap::new();
@@ -92,7 +105,20 @@ impl<'a> EmitCtx<'a> {
             blocks,
             pos: 0,
             field_offsets: BTreeMap::new(),
+            regs,
         }
+    }
+
+    // TODO: only spill regs to stack that are later used with ORef
+
+    fn load_reg(&mut self, r: &Reg) -> Value {
+        let (slot, ty) = self.regs[r];
+        self.ins().stack_load(ty, slot, 0)
+    }
+
+    fn store_reg(&mut self, r: &Reg, val: Value) {
+        let (slot, ty) = self.regs[r];
+        self.ins().stack_store(val, slot, 0);
     }
 
     fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
@@ -162,26 +188,26 @@ impl<'a> EmitCtx<'a> {
             }
             match op {
                 OpCode::Mov { dst, src } => {
-                    let val = self.use_var(src.var());
-                    self.def_var(dst.var(), val)
+                    let val = self.load_reg(src);
+                    self.store_reg(dst, val)
                 }
                 OpCode::Int { dst, idx } => {
                     let val = self
                         .builder
                         .ins()
                         .iconst(types::I32, self.code.ints[idx.0 as usize] as i64);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::Float { dst, idx } => {
                     let val = self
                         .builder
                         .ins()
                         .f64const(self.code.floats[idx.0 as usize]);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Bool { dst, val } => {
                     let val = self.ins().iconst(types::I8, *val as i64);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::Bytes { dst, idx } => todo!(),
                 OpCode::String { dst, idx } => {
@@ -189,69 +215,69 @@ impl<'a> EmitCtx<'a> {
                         .m
                         .declare_data_in_func(self.idxs.ustr[idx], self.builder.func);
                     let val = self.ins().global_value(types::I64, gval);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Null { dst } => {
                     let val = self.ins().iconst(types::I64, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Add { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().fadd(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     } else {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().iadd(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     }
                 }
                 OpCode::Sub { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().fsub(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     } else {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().isub(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     }
                 }
                 OpCode::Mul { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().fmul(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     } else {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().imul(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     }
                 }
                 OpCode::SDiv { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().fdiv(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     } else {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().sdiv(a, b);
-                        self.def_var(dst.var(), val)
+                        self.store_reg(dst, val)
                     }
                 }
                 OpCode::UDiv { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().udiv(a, b);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::SMod { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
@@ -263,90 +289,89 @@ impl<'a> EmitCtx<'a> {
                         };
                         let id = self.idxs.native_calls[name];
                         let f = self.m.declare_func_in_func(id, self.builder.func);
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let i = self.ins().call(f, &[a, b]);
-                        self.builder
-                            .def_var(dst.var(), self.builder.inst_results(i)[0]);
+                        self.store_reg(dst, self.builder.inst_results(i)[0]);
                     } else {
-                        let a = self.use_var(a.var());
-                        let b = self.use_var(b.var());
+                        let a = self.load_reg(a);
+                        let b = self.load_reg(b);
                         let val = self.ins().srem(a, b);
-                        self.def_var(dst.var(), val);
+                        self.store_reg(dst, val);
                     }
                 }
                 OpCode::UMod { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().urem(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Shl { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().ishl(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::SShr { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().sshr(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::UShr { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().ushr(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::And { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().band(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Or { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().bor(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Xor { dst, a, b } => {
-                    let a = self.use_var(a.var());
-                    let b = self.use_var(b.var());
+                    let a = self.load_reg(a);
+                    let b = self.load_reg(b);
                     let val = self.ins().bxor(a, b);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Neg { dst, val } => {
                     let ty = self.reg_type(val);
                     if ty.is_float() {
-                        let val = self.use_var(val.var());
+                        let val = self.load_reg(val);
                         let val = self.ins().fneg(val);
-                        self.def_var(dst.var(), val);
+                        self.store_reg(dst, val);
                     } else {
-                        let val = self.use_var(val.var());
+                        let val = self.load_reg(val);
                         let val = self.ins().ineg(val);
-                        self.def_var(dst.var(), val);
+                        self.store_reg(dst, val);
                     }
                 }
                 OpCode::Not { dst, val } => {
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     let val = self.ins().bnot(val);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Incr { dst } => {
-                    let val = self.use_var(dst.var());
+                    let val = self.load_reg(dst);
                     let ty = self.reg_type(dst).cranelift_type();
                     let one = self.ins().iconst(ty, 1i64);
                     let new_val = self.ins().iadd(val, one);
-                    self.def_var(dst.var(), new_val);
+                    self.store_reg(dst, new_val);
                 }
                 OpCode::Decr { dst } => {
-                    let val = self.use_var(dst.var());
+                    let val = self.load_reg(dst);
                     let ty = self.reg_type(dst).cranelift_type();
                     let one = self.ins().iconst(ty, 1i64);
                     let new_val = self.ins().iadd(val, one);
-                    self.def_var(dst.var(), new_val);
+                    self.store_reg(dst, new_val);
                 }
                 OpCode::Call0 { dst, f } => {
                     let f_ref = self
@@ -354,7 +379,7 @@ impl<'a> EmitCtx<'a> {
                         .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
                     let i = self.ins().call(f_ref, &[]);
                     let val = self.inst_results(i)[0];
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::Call1 { dst, f, args }
                 | OpCode::Call2 { dst, f, args }
@@ -366,17 +391,15 @@ impl<'a> EmitCtx<'a> {
                         .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
                     let args = &args
                         .iter()
-                        .map(|r| self.use_var(r.var()))
+                        .map(|r| self.load_reg(r))
                         .collect::<Vec<Value>>();
                     let i = self.ins().call(f_ref, args);
-                    self.builder
-                        .def_var(dst.var(), self.builder.inst_results(i)[0]);
+                    self.store_reg(dst, self.builder.inst_results(i)[0]);
                 }
 
                 OpCode::CallMethod { dst, fid, args } => match self.reg_type(&args[0]) {
                     HLType::Object(obj) => {
-                        let vargs: Vec<Value> =
-                            args.iter().map(|r| self.use_var(r.var())).collect();
+                        let vargs: Vec<Value> = args.iter().map(|r| self.load_reg(r)).collect();
                         let ty_val = self.ins().load(types::I64, MemFlags::new(), vargs[0], 0);
                         let proto_val = self.ins().load(
                             types::I64,
@@ -412,7 +435,7 @@ impl<'a> EmitCtx<'a> {
                     let val = self.ins().symbol_value(types::I64, global_value);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::SetGlobal { idx, val } => todo!(),
                 OpCode::Field { dst, obj, fid } => {
@@ -421,10 +444,10 @@ impl<'a> EmitCtx<'a> {
                             let offset = self
                                 .lookup_field_offset(self.fun[*obj], fid.0 as usize)
                                 .unwrap();
-                            let obj = self.use_var(obj.var());
+                            let obj = self.load_reg(obj);
                             let ty = self.reg_type(dst).cranelift_type();
                             let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
-                            self.def_var(dst.var(), val);
+                            self.store_reg(dst, val);
                         }
                         HLType::Virtual(virt) => {
                             //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
@@ -433,7 +456,7 @@ impl<'a> EmitCtx<'a> {
                             //  else
                             //      hl_dyn_set(obj,hash(field),vt,val)
 
-                            let obj_val = self.use_var(obj.var());
+                            let obj_val = self.load_reg(obj);
                             let field_addr = self.ins().iadd_imm(
                                 obj_val,
                                 size_of::<vvirtual>() as i64
@@ -446,7 +469,7 @@ impl<'a> EmitCtx<'a> {
                                 |this| {
                                     let ty = this.reg_type(dst).cranelift_type();
                                     let val = this.ins().load(ty, MemFlags::new(), obj_val, 0);
-                                    this.def_var(dst.var(), val);
+                                    this.store_reg(dst, val);
                                 },
                                 |this| {
                                     this.emit_dyn_get(dst, obj, virt.fields[fid.0 as usize].0);
@@ -462,8 +485,8 @@ impl<'a> EmitCtx<'a> {
                         let offset = self
                             .lookup_field_offset(self.fun[*obj], fid.0 as usize)
                             .unwrap();
-                        let val = self.use_var(val.var());
-                        let obj = self.use_var(obj.var());
+                        let val = self.load_reg(val);
+                        let obj = self.load_reg(obj);
                         self.ins().store(MemFlags::new(), val, obj, offset as i32);
                     }
                     HLType::Virtual(virt) => {
@@ -473,8 +496,8 @@ impl<'a> EmitCtx<'a> {
                         //  else
                         //      hl_dyn_set(obj,hash(field),vt,val)
 
-                        let obj_val = self.use_var(obj.var());
-                        let val_val = self.use_var(val.var());
+                        let obj_val = self.load_reg(obj);
+                        let val_val = self.load_reg(val);
                         let field_addr = self.ins().iadd_imm(
                             obj_val,
                             size_of::<vvirtual>() as i64
@@ -499,17 +522,17 @@ impl<'a> EmitCtx<'a> {
                     let offset = self
                         .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
                         .unwrap();
-                    let obj = self.use_var(Reg(0).var());
+                    let obj = self.load_reg(&Reg(0));
                     let ty = self.code[self.fun[*dst]].cranelift_type();
                     let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::SetThis { fid, val } => {
                     let offset = self
                         .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
                         .unwrap();
-                    let val = self.use_var(val.var());
-                    let obj = self.use_var(Reg(0).var());
+                    let val = self.load_reg(val);
+                    let obj = self.load_reg(&Reg(0));
                     self.ins().store(MemFlags::new(), val, obj, offset as i32);
                 }
                 OpCode::DynGet { dst, obj, str_idx } => {
@@ -521,7 +544,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::JTrue { val, offset } | OpCode::JNotNull { val, offset } => {
                     let block_then_label = self.block_for_offset(offset);
                     let block_else_label = self.next_block();
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     self.ins()
                         .brif(val, block_then_label, &[], block_else_label, &[]);
                     self.switch_to_block(block_else_label);
@@ -529,7 +552,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::JFalse { val, offset } | OpCode::JNull { val, offset } => {
                     let block_else_label = self.block_for_offset(offset);
                     let block_then_label = self.next_block();
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     self.builder
                         .ins()
                         .brif(val, block_then_label, &[], block_else_label, &[]);
@@ -587,22 +610,22 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::ToDyn { dst, val } => todo!(),
                 OpCode::ToSFloat { dst, val } => {
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.ins().fcvt_from_sint(ty, val);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::ToUFloat { dst, val } => {
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.builder.ins().fcvt_from_uint(ty, val);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::ToInt { dst, val } => {
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.builder.ins().fcvt_to_sint_sat(ty, val);
-                    self.def_var(dst.var(), val)
+                    self.store_reg(dst, val)
                 }
                 OpCode::SafeCast { dst, val } => todo!(),
                 OpCode::UnsafeCast { dst, val } => todo!(),
@@ -616,7 +639,7 @@ impl<'a> EmitCtx<'a> {
                     if self.reg_type(reg).is_void() {
                         self.ins().return_(&[]);
                     } else {
-                        let val = self.use_var(reg.var());
+                        let val = self.load_reg(reg);
                         self.ins().return_(&[val]);
                     }
                     let next_block = self.next_block();
@@ -629,69 +652,69 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Trap { dst, jump_off } => (), // TODO
                 OpCode::EndTrap { something } => (),  // TODO
                 OpCode::GetI8 { dst, mem, offset } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::GetI16 { dst, mem, offset } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::GetMem { dst, mem, offset } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
                     let ty = self.reg_type(dst).cranelift_type();
                     let val = self.ins().load(ty, MemFlags::new(), ptr, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::GetArray { dst, mem, offset } => {
                     let ty = self.reg_type(dst).cranelift_type();
 
-                    let arr_addr = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let arr_addr = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
                     let val_addr = self.ins().iadd(mem_addr, offset);
                     let val = self.ins().load(ty, MemFlags::trusted(), val_addr, 0);
-                    self.def_var(dst.var(), val);
+                    self.store_reg(dst, val);
                 }
                 OpCode::SetI8 { mem, offset, val } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     self.ins().istore8(MemFlags::new(), val, ptr, 0);
                 }
                 OpCode::SetI16 { mem, offset, val } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     self.ins().istore16(MemFlags::new(), val, ptr, 0);
                 }
                 OpCode::SetMem { mem, offset, val } => {
-                    let mem = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let mem = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let ptr = self.ins().iadd(mem, offset);
-                    let val = self.use_var(val.var());
+                    let val = self.load_reg(val);
                     self.ins().store(MemFlags::new(), val, ptr, 0);
                 }
                 OpCode::SetArray { mem, offset, val } => {
                     let ty = self.reg_type(val).cranelift_type();
 
-                    let arr_addr = self.use_var(mem.var());
-                    let offset = self.use_var(offset.var());
+                    let arr_addr = self.load_reg(mem);
+                    let offset = self.load_reg(offset);
                     let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
                     let val_addr = self.ins().iadd(mem_addr, offset);
-                    let val = self.use_var(val.var());
-                    self.ins().store( MemFlags::trusted(), val, val_addr, 0);
+                    let val = self.load_reg(val);
+                    self.ins().store(MemFlags::trusted(), val, val_addr, 0);
                 }
                 OpCode::New { dst } => match self.reg_type(dst) {
                     HLType::Object(_) | HLType::Struct(_) => {
@@ -704,8 +727,7 @@ impl<'a> EmitCtx<'a> {
                             self.builder.func,
                         );
                         let inst = self.ins().call(func_ref, &[val]);
-                        self.builder
-                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                        self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Dynobj => {
                         let func_ref = self.m.declare_func_in_func(
@@ -713,8 +735,7 @@ impl<'a> EmitCtx<'a> {
                             self.builder.func,
                         );
                         let inst = self.ins().call(func_ref, &[]);
-                        self.builder
-                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                        self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Virtual(_) => {
                         let ty_id = self.idxs.types[&self.fun[*dst]];
@@ -726,22 +747,42 @@ impl<'a> EmitCtx<'a> {
                             self.builder.func,
                         );
                         let inst = self.ins().call(func_ref, &[val]);
-                        self.builder
-                            .def_var(dst.var(), self.builder.inst_results(inst)[0]);
+                        self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     _ => panic!("invalid ONew"),
                 },
                 OpCode::ArraySize { dst, arr } => {
-                    let arr = self.use_var(arr.var());
-                    let val = self.ins().load(types::I32, MemFlags::trusted(), arr, offset_of!(varray, size) as i32);
-                    self.def_var(dst.var(), val);
-                },
+                    let arr = self.load_reg(arr);
+                    let val = self.ins().load(
+                        types::I32,
+                        MemFlags::trusted(),
+                        arr,
+                        offset_of!(varray, size) as i32,
+                    );
+                    self.store_reg(dst, val);
+                }
                 OpCode::Type { dst, idx } => todo!(),
                 OpCode::GetType { dst, val } => todo!(),
                 OpCode::GetTid { dst, val } => todo!(),
-                OpCode::Ref { dst, val } => todo!(),
-                OpCode::Unref { dst, r } => todo!(),
-                OpCode::Setref { r, val } => todo!(),
+                OpCode::Ref { dst, val } => {
+                    let (stack_slot, _) = self.regs[val];
+                    let val = self.ins().stack_addr(types::I64, stack_slot, 0);
+                    self.store_reg(dst, val);
+                }
+                OpCode::Unref { dst, r } => {
+                    let addr = self.load_reg(r);
+                    let ty = match self.reg_type(r) {
+                        HLType::Reference(t) => self.code[*t].cranelift_type(),
+                        _ => panic!(),
+                    };
+                    let val = self.ins().load(ty, MemFlags::trusted(), addr, 0);
+                    self.store_reg(dst, val);
+                }
+                OpCode::Setref { r, val } => {
+                    let addr = self.load_reg(r);
+                    let val = self.load_reg(val);
+                    self.ins().store(MemFlags::trusted(), val, addr, 0);
+                }
                 OpCode::MakeEnum {
                     dst,
                     construct_idx,
@@ -771,7 +812,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
-        let obj_val = self.use_var(obj.var());
+        let obj_val = self.load_reg(obj);
         let hash_ref = self
             .m
             .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
@@ -807,12 +848,12 @@ impl<'a> EmitCtx<'a> {
                 .call(dyn_get_ref, &[obj_val, hashed_field, virt_ty_val]),
         };
         let dst_val = self.inst_results(inst)[0];
-        self.def_var(dst.var(), dst_val);
+        self.store_reg(dst, dst_val);
     }
 
     fn emit_dyn_set(&mut self, obj: &Reg, field_name: UStrIdx, val: &Reg) {
-        let obj_val = self.use_var(obj.var());
-        let val_val = self.use_var(val.var());
+        let obj_val = self.load_reg(obj);
+        let val_val = self.load_reg(val);
         let hash_ref = self
             .m
             .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
@@ -899,13 +940,13 @@ impl<'a> EmitCtx<'a> {
             let Some(float_cc) = float_cc else {
                 panic!("unsupported float comparison")
             };
-            let a = self.use_var(a.var());
-            let b = self.use_var(b.var());
+            let a = self.load_reg(a);
+            let b = self.load_reg(b);
             self.ins().fcmp(float_cc, a, b)
         } else {
             assert!(!b_ty.is_float());
-            let a = self.use_var(a.var());
-            let b = self.use_var(b.var());
+            let a = self.load_reg(a);
+            let b = self.load_reg(b);
             self.ins().icmp(int_cc, a, b)
         };
         self.ins()
