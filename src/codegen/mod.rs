@@ -64,6 +64,12 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("hl_alloc_enum", &[types::I64, types::I32], &[types::I64]),
     ("hl_throw", &[types::I64], &[]),
     ("hl_rethrow", &[types::I64], &[]),
+    ("hl_to_virtual", &[types::I64, types::I64], &[types::I64]),
+    ("hl_dyn_castf", &[types::I64, types::I64], &[types::F32]),
+    ("hl_dyn_castd", &[types::I64, types::I64], &[types::F64]),
+    ("hl_dyn_casti64", &[types::I64, types::I64], &[types::I64]),
+    ("hl_dyn_casti", &[types::I64, types::I64, types::I64], &[types::I32]),
+    ("hl_dyn_castp", &[types::I64, types::I64, types::I64], &[types::I64]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {

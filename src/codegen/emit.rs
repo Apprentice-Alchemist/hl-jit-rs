@@ -697,9 +697,57 @@ impl<'a> EmitCtx<'a> {
                     };
                     self.store_reg(dst, val)
                 }
-                OpCode::SafeCast { dst, val } => self.trap(op),
-                OpCode::UnsafeCast { dst, val } => self.trap(op),
-                OpCode::ToVirtual { dst, val } => self.trap(op),
+                OpCode::SafeCast { dst, val } => {
+                    let val_val = self.load_reg(val);
+                    let dst_val = self.load_reg(val);
+
+                    let cast_name = match self.reg_type(dst) {
+                        HLType::Float32 => "hl_dyn_castf",
+                        HLType::Float64 => "hl_dyn_castd",
+                        HLType::Int64 => "hl_dyn_casti64",
+                        HLType::Int32 | HLType::UInt16 | HLType::UInt8 => "hl_dyn_casti",
+                        _ => "hl_dyn_castp",
+                    };
+                    let cast_id = self.idxs.native_calls[cast_name];
+                    let cast_ref = self.m.declare_func_in_func(cast_id, self.builder.func);
+                    let inst = match self.reg_type(dst) {
+                        HLType::Float32 | HLType::Float64 | HLType::Int64 => {
+                            let data_id = self.idxs.types[&self.fun[*val]];
+                            let global_value =
+                                self.m.declare_data_in_func(data_id, self.builder.func);
+                            let ty = self.ins().global_value(types::I64, global_value);
+                            self.ins().call(cast_ref, &[val_val, ty])
+                        }
+                        _ => {
+                            let data_id = self.idxs.types[&self.fun[*val]];
+                            let global_value =
+                                self.m.declare_data_in_func(data_id, self.builder.func);
+                            let src_ty = self.ins().global_value(types::I64, global_value);
+                            let data_id = self.idxs.types[&self.fun[*dst]];
+                            let global_value =
+                                self.m.declare_data_in_func(data_id, self.builder.func);
+                            let dst_ty = self.ins().global_value(types::I64, global_value);
+                            self.ins().call(cast_ref, &[val_val, src_ty, dst_ty])
+                        }
+                    };
+                    self.store_reg(dst, self.inst_results(inst)[0]);
+                }
+                OpCode::UnsafeCast { dst, val } => {
+                    let val = self.load_reg(val);
+                    self.store_reg(dst, val);
+                }
+                OpCode::ToVirtual { dst, val } => {
+                    let val = self.load_reg(val);
+
+                    let ty_id = self.idxs.types[&self.fun[*dst]];
+                    let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, gv);
+
+                    let id = self.idxs.native_calls["hl_to_virtual"];
+                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    let inst = self.ins().call(f, &[ty_val, val]);
+                    self.store_reg(dst, self.builder.inst_results(inst)[0]);
+                }
                 OpCode::Label => {
                     if !self.blocks.contains_key(&pos) {
                         let next_block = self.ensure_block(pos);
@@ -722,14 +770,14 @@ impl<'a> EmitCtx<'a> {
                     let id = self.idxs.native_calls["hl_rethrow"];
                     let f = self.m.declare_func_in_func(id, self.builder.func);
                     self.ins().call(f, &[val]);
-                    self.ins().trap(TrapCode::unwrap_user(1));
+                    self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                 }
                 OpCode::Rethrow(reg) => {
                     let val = self.load_reg(reg);
                     let id = self.idxs.native_calls["hl_throw"];
                     let f = self.m.declare_func_in_func(id, self.builder.func);
                     self.ins().call(f, &[val]);
-                    self.ins().trap(TrapCode::unwrap_user(1));
+                    self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                 }
                 OpCode::Switch { val, cases, end } => {
                     let val = self.load_reg(val);
@@ -742,15 +790,21 @@ impl<'a> EmitCtx<'a> {
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
                 }
-                OpCode::NullCheck(reg) => self.trap(op),
+                OpCode::NullCheck(reg) => {
+                    let next_block = self.next_block();
+                    let val = self.load_reg(reg);
+                    let null_block = self.create_block();
+                    self.ins().brif(val, next_block, &[], null_block, &[]);
+                    self.switch_to_block(null_block);
+                    self.ins().trap(TrapCode::unwrap_user(2)); // TODO: hl_null_access
+                    self.switch_to_block(next_block);
+                },
                 OpCode::Trap { dst, jump_off } => {
                     self.block_for_offset(jump_off);
-                    self.trap(op)
-                } // TODO
+                }
                 OpCode::EndTrap { something } => {
                     self.block_for_offset(something);
-                    self.trap(op)
-                } // TODO
+                }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
                     let offset = self.load_reg(offset);
