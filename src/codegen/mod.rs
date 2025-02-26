@@ -8,7 +8,7 @@ use cranelift::module::{DataDescription, DataId, FuncId, Linkage, Module, Module
 use cranelift::prelude::*;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
-use crate::sys::{hl_type, hl_type_fun, hl_type_kind};
+use crate::sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
 
 mod data;
 mod emit;
@@ -73,11 +73,12 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
         &[types::I64, types::I64, types::I64],
         &[types::I64],
     ),
-    ("hl_init_alloc", &[types::I64], &[]),
+    ("hl_alloc_init", &[types::I64], &[]),
     ("hl_init_virtual", &[types::I64, types::I64], &[]),
     ("hl_init_enum", &[types::I64, types::I64], &[]),
     ("hl_alloc_dynbool", &[types::I8], &[types::I64]),
     ("hl_alloc_dynamic", &[types::I64], &[types::I64]),
+    ("hl_add_root", &[types::I64], &[]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -169,6 +170,14 @@ impl<'a> CodegenCtx<'a> {
         bcx.seal_block(entry_block);
         bcx.switch_to_block(entry_block);
 
+        let hl_alloc_id = self.idxs.native_calls["hl_alloc_init"];
+        let hl_alloc_ref = self.m.declare_func_in_func(hl_alloc_id, bcx.func);
+        let module_context = self.m.declare_data_in_func(self.idxs.module_context_id, bcx.func);
+        let module_context_val = bcx.ins().global_value(types::I64, module_context);
+        assert_eq!(offset_of!(hl_module_context, alloc), 0);
+        bcx.ins().call(hl_alloc_ref, &[module_context_val]);
+
+
         let init_enum_id = self.idxs.native_calls["hl_init_enum"];
         let init_enum_ref = self.m.declare_func_in_func(init_enum_id, &mut bcx.func);
         let init_virtual_id = self.idxs.native_calls["hl_init_virtual"];
@@ -205,6 +214,16 @@ impl<'a> CodegenCtx<'a> {
                 let loc = bcx.ins().global_value(types::I64, gv);
                 bcx.ins()
                     .store(MemFlags::trusted(), hash, loc, *offset as i32);
+            }
+        }
+
+        let hl_add_root_id = self.idxs.native_calls["hl_add_root"];
+        let hl_add_root_ref = self.m.declare_func_in_func(hl_add_root_id, bcx.func);
+        for (gv, data) in &self.idxs.globals {
+            if !code.constants.contains_key(&gv) {
+                let gv = self.m.declare_data_in_func(*data, bcx.func);
+                let val = bcx.ins().global_value(types::I64, gv);
+                bcx.ins().call(hl_add_root_ref, &[val]);
             }
         }
 
