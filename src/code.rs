@@ -1,4 +1,4 @@
-use std::ops::Index;
+use std::{collections::BTreeMap, ops::Index};
 #[allow(unused)]
 use std::{
     fs::File,
@@ -295,6 +295,35 @@ impl HLType {
     pub fn is_void(&self) -> bool {
         matches!(self, Self::Void)
     }
+
+    pub fn is_ptr(&self) -> bool {
+        match self {
+            Self::Bytes
+            | Self::Dynamic
+            | Self::Function(_)
+            | Self::Object(_)
+            | Self::Array
+            | Self::Type
+            | Self::Reference(_)
+            | Self::Virtual(_)
+            | Self::Dynobj
+            | Self::Abstract(_)
+            | Self::Enum(_)
+            | Self::Null(_)
+            | Self::Method(_)
+            | Self::Struct(_)
+            | Self::Packed(_)
+            | Self::Guid => true,
+            Self::Void
+            | Self::UInt8
+            | Self::UInt16
+            | Self::Int32
+            | Self::Int64
+            | Self::Float32
+            | Self::Float64
+            | Self::Boolean => false,
+        }
+    }
 }
 
 fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
@@ -440,10 +469,10 @@ pub struct Code {
     pub bytes: Option<(Vec<u8>, Vec<usize>)>,
     pub debugfiles: Option<Vec<String>>,
     pub types: Vec<HLType>,
-    pub globals: Vec<isize>,
+    pub globals: Vec<TypeIdx>,
     pub natives: Vec<(StrIdx, StrIdx, TypeIdx, FunIdx)>,
     pub functions: Vec<HLFunction>,
-    pub constants: Vec<(GlobalIdx, Vec<usize>)>,
+    pub constants: BTreeMap<GlobalIdx, Vec<usize>>,
     pub entrypoint: FunIdx,
 }
 
@@ -466,6 +495,13 @@ impl Index<StrIdx> for Code {
 
     fn index(&self, idx: StrIdx) -> &Self::Output {
         &self.strings[idx.0]
+    }
+}
+impl Index<GlobalIdx> for Code {
+    type Output = TypeIdx;
+
+    fn index(&self, idx: GlobalIdx) -> &Self::Output {
+        &self.globals[idx.0]
     }
 }
 
@@ -527,7 +563,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         None
     };
     let types = r.vec(ntypes, read_type)?;
-    let globals = r.vec(nglobals, Reader::idx)?;
+    let globals = r.vec(nglobals, Reader::r)?;
     let natives = r.vec(nnatives, |r| {
         let lib = r.r()?;
         let name = r.r()?;
@@ -616,7 +652,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         globals,
         natives,
         functions,
-        constants,
+        constants: BTreeMap::from_iter(constants.into_iter()),
         entrypoint,
     })
 }

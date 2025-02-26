@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
-
+    println!("cargo::rustc-link-lib=hl");
+    println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/local/lib");
     Ok(())
 }

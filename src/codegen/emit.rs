@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use std::{collections::BTreeMap, mem::offset_of};
 
 use cranelift::codegen::ir::{BlockCall, Inst, SourceLoc, ValueListPool};
@@ -6,6 +7,7 @@ use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
 
 use crate::code::TypeFun;
+use crate::sys::vdynamic;
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
@@ -136,10 +138,14 @@ impl<'a> EmitCtx<'a> {
         self.ins().stack_store(val, slot, 0);
     }
 
+    fn reg_addr(&mut self, r: &Reg) -> Value {
+        let (slot, _) = self.regs[r];
+        self.ins().stack_addr(types::I64, slot, 0)
+    }
+
     fn trap(&mut self, code: &OpCode) {
         let value = self.ins().iconst(types::I64, 0);
-        self.ins()
-            .trapz(value, TrapCode::unwrap_user(code.discriminant()));
+        self.ins().debugtrap();
     }
 
     fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
@@ -149,32 +155,39 @@ impl<'a> EmitCtx<'a> {
 
         let mut offsets = Vec::<u32>::new();
 
-        fn fill_offsets(code: &Code, ty: TypeIdx, offsets: &mut Vec<u32>) -> (usize, u32) {
+        fn fill_offsets(code: &Code, ty: TypeIdx, offsets: &mut Vec<u32>) -> (usize, Layout) {
             let o = code[ty].type_obj().unwrap();
-            let (nfields, super_size) = if let Some(ty) = o.super_ {
+            let (nfields, layout) = if let Some(ty) = o.super_ {
                 fill_offsets(code, ty, offsets)
             } else {
                 (
                     0,
-                    if matches!(code[ty], HLType::Struct(_)) {
-                        8
+                    if matches!(code[ty], HLType::Object(_)) {
+                        Layout::new::<*mut u8>()
                     } else {
-                        0
+                        Layout::from_size_align(0, 1).unwrap()
                     },
                 )
             };
 
-            let mut size = super_size;
+            let mut layout = layout;
             for (i, (str_idx, type_idx)) in o.fields.iter().enumerate() {
-                let byte_size = code[*type_idx].cranelift_type().bytes();
-                if (size % byte_size) != 0 {
-                    size += (size % byte_size);
-                }
-                offsets.push(byte_size);
-                size += byte_size;
+                let field_layout = match &code[*type_idx] {
+                    HLType::UInt8 => Layout::new::<u8>(),
+                    HLType::UInt16 => Layout::new::<u16>(),
+                    HLType::Int32 => Layout::new::<i32>(),
+                    HLType::Int64 => Layout::new::<i64>(),
+                    HLType::Float32 => Layout::new::<f32>(),
+                    HLType::Float64 => Layout::new::<f64>(),
+                    HLType::Boolean => Layout::new::<bool>(),
+                    _ => Layout::new::<*mut u8>()
+                };
+                let (new_layout, offset) = layout.extend(field_layout).unwrap();
+                layout = new_layout;
+                offsets.push(offset.try_into().unwrap());
             }
 
-            (nfields + o.fields.len(), size)
+            (nfields + o.fields.len(), layout)
         }
 
         let (nfields, size) = fill_offsets(self.code, ty, &mut offsets);
@@ -317,7 +330,6 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::SMod { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
-                        // TODO: handle importing of fmod somewhere else
                         let name = match self.reg_type(dst) {
                             HLType::Float32 => "fmodf",
                             HLType::Float32 => "fmod",
@@ -485,7 +497,16 @@ impl<'a> EmitCtx<'a> {
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
                     self.store_reg(dst, val);
                 }
-                OpCode::SetGlobal { idx, val } => self.trap(op),
+                OpCode::SetGlobal { idx, val } => {
+                    let global_value = self
+                        .m
+                        .declare_data_in_func(self.idxs.globals[idx], self.builder.func);
+                    let global_value = self.ins().symbol_value(types::I64, global_value);
+                    // let ty = self.reg_type(dst).cranelift_type();
+                    // let global_addr = self.ins().load(ty, MemFlags::new(), global_value, 0);
+                    let val = self.load_reg(val);
+                    self.ins().store(MemFlags::new(), val, global_value, 0);
+                }
                 OpCode::Field { dst, obj, fid } => {
                     match &self.code[self.fun[*obj]] {
                         HLType::Struct(_) | HLType::Object(_) => {
@@ -656,7 +677,65 @@ impl<'a> EmitCtx<'a> {
                     let block = self.block_for_offset(offset);
                     self.ins().jump(block, &[]);
                 }
-                OpCode::ToDyn { dst, val } => self.trap(op),
+                OpCode::ToDyn { dst, val } => match self.reg_type(val) {
+                    HLType::Boolean => {
+                        let func_id = self.idxs.native_calls["hl_alloc_dynbool"];
+                        let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                        let val = self.load_reg(val);
+                        let inst = self.ins().call(func_ref, &[val]);
+                        self.store_reg(dst, self.inst_results(inst)[0]);
+                    }
+                    ty => {
+                        // TODO: deduplicate code
+                        if ty.is_ptr() {
+                            let val_val = self.load_reg(val);
+                            let next_block = self.next_block();
+                            self.emit_brif(
+                                val_val,
+                                |ecx| {
+                                    let func_id = ecx.idxs.native_calls["hl_alloc_dynamic"];
+                                    let func_ref =
+                                        ecx.m.declare_func_in_func(func_id, ecx.builder.func);
+                                    let gv = ecx.m.declare_data_in_func(
+                                        ecx.idxs.types[&ecx.fun[*val]],
+                                        ecx.builder.func,
+                                    );
+                                    let clir_ty = ecx.ins().global_value(types::I64, gv);
+                                    let inst = ecx.ins().call(func_ref, &[clir_ty]);
+                                    let dyn_val = ecx.inst_results(inst)[0];
+                                    ecx.ins().store(
+                                        MemFlags::new(),
+                                        val_val,
+                                        dyn_val,
+                                        offset_of!(vdynamic, v) as i32,
+                                    );
+                                },
+                                |ecx| {
+                                    let null = ecx.ins().iconst(types::I64, 0);
+                                    ecx.store_reg(dst, null);
+                                },
+                                next_block,
+                            );
+                        } else {
+                            let val_val = self.load_reg(val);
+                            let func_id = self.idxs.native_calls["hl_alloc_dynamic"];
+                            let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                            let gv = self.m.declare_data_in_func(
+                                self.idxs.types[&self.fun[*val]],
+                                self.builder.func,
+                            );
+                            let clir_ty = self.ins().global_value(types::I64, gv);
+                            let inst = self.ins().call(func_ref, &[clir_ty]);
+                            let dyn_val = self.inst_results(inst)[0];
+                            self.ins().store(
+                                MemFlags::new(),
+                                val_val,
+                                dyn_val,
+                                offset_of!(vdynamic, v) as i32,
+                            );
+                        }
+                    }
+                },
                 OpCode::ToSFloat { dst, val } => {
                     let src_ty = self.reg_type(val).cranelift_type();
                     let dst_ty = self.reg_type(dst).cranelift_type();
@@ -698,7 +777,7 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::SafeCast { dst, val } => {
-                    let val_val = self.load_reg(val);
+                    let val_val = self.reg_addr(val);
                     let dst_val = self.load_reg(val);
 
                     let cast_name = match self.reg_type(dst) {
@@ -798,7 +877,7 @@ impl<'a> EmitCtx<'a> {
                     self.switch_to_block(null_block);
                     self.ins().trap(TrapCode::unwrap_user(2)); // TODO: hl_null_access
                     self.switch_to_block(next_block);
-                },
+                }
                 OpCode::Trap { dst, jump_off } => {
                     self.block_for_offset(jump_off);
                 }

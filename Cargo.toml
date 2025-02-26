@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 cranelift = { version = "0.116.1", features = ["jit", "module", "native", "object"] }
+libloading = "0.8.6"
 
 [build-dependencies]
 bindgen = "0.71.1"

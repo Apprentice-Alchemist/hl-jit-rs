@@ -13,8 +13,8 @@ use crate::sys::{hl_type, hl_type_fun, hl_type_kind};
 mod data;
 mod emit;
 
-#[derive(Default)]
 struct Indexes {
+    module_context_id: DataId,
     types: BTreeMap<TypeIdx, DataId>,
     ustr: BTreeMap<UStrIdx, DataId>,
     fn_map: BTreeMap<FunIdx, FuncId>,
@@ -22,12 +22,6 @@ struct Indexes {
     native_calls: BTreeMap<&'static str, FuncId>,
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
 }
-
-// HL_API void hl_dyn_seti( vdynamic *d, int hfield, hl_type *t, int value );
-// HL_API void hl_dyn_seti64( vdynamic *d, int hfield, int64 value );
-// HL_API void hl_dyn_setp( vdynamic *d, int hfield, hl_type *t, void *ptr );
-// HL_API void hl_dyn_setf( vdynamic *d, int hfield, float f );
-// HL_API void hl_dyn_setd( vdynamic *d, int hfield, double v );
 
 static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("fmod", &[types::F64], &[types::F64]),
@@ -69,8 +63,21 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("hl_dyn_castf", &[types::I64, types::I64], &[types::F32]),
     ("hl_dyn_castd", &[types::I64, types::I64], &[types::F64]),
     ("hl_dyn_casti64", &[types::I64, types::I64], &[types::I64]),
-    ("hl_dyn_casti", &[types::I64, types::I64, types::I64], &[types::I32]),
-    ("hl_dyn_castp", &[types::I64, types::I64, types::I64], &[types::I64]),
+    (
+        "hl_dyn_casti",
+        &[types::I64, types::I64, types::I64],
+        &[types::I32],
+    ),
+    (
+        "hl_dyn_castp",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    ),
+    ("hl_init_alloc", &[types::I64], &[]),
+    ("hl_init_virtual", &[types::I64, types::I64], &[]),
+    ("hl_init_enum", &[types::I64, types::I64], &[]),
+    ("hl_alloc_dynbool", &[types::I8], &[types::I64]),
+    ("hl_alloc_dynamic", &[types::I64], &[types::I64]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -95,20 +102,30 @@ pub struct CodegenCtx<'a> {
 impl<'a> CodegenCtx<'a> {
     pub fn new(m: &'a mut dyn Module) -> Self {
         let ctx = m.make_context();
+        let module_context_id = m.declare_anonymous_data(true, false).unwrap();
+        let idxs = Indexes {
+            module_context_id,
+            types: Default::default(),
+            ustr: Default::default(),
+            fn_map: Default::default(),
+            globals: Default::default(),
+            native_calls: Default::default(),
+            hash_locations: Default::default(),
+        };
         Self {
             m,
             f_ctx: FunctionBuilderContext::new(),
             ctx,
-            idxs: Default::default(),
+            idxs,
         }
     }
 
     pub fn compile(&mut self, code: Code) -> FuncId {
         data::declare(self.m, &code, &mut self.idxs).unwrap();
         build_native_calls(self.m, &mut self.idxs);
-        data::define_types(self.m, &code, &mut self.idxs);
+        data::define_types(self.m, &code, &mut self.idxs).unwrap();
         data::define_globals(self.m, &code, &self.idxs);
-        data::define_strings(self.m, &code, &self.idxs);
+        data::define_strings(self.m, &code, &self.idxs).unwrap();
         for fun in &code.functions {
             let mut signature = self.m.make_signature();
             fill_signature_ty(&code, &mut signature, fun.ty);
@@ -118,15 +135,11 @@ impl<'a> CodegenCtx<'a> {
         for (lib, name, ty, fun_idx) in &code.natives {
             let lib = match &code[*lib] {
                 "std\0" => "hl",
+                "?std\0" => "hl",
                 val => &val[0..val.len() - 1],
             };
             let name = &code[*name];
             let name = &name[0..name.len() - 1];
-            let (name, optional) = if name.starts_with('?') {
-                (&name[1..], true)
-            } else {
-                (name, false)
-            };
 
             let symbol_name = format!("{lib}_{name}");
             let mut signature = self.m.make_signature();
@@ -140,7 +153,69 @@ impl<'a> CodegenCtx<'a> {
         for fun in code.functions.iter() {
             emit::emit_fun(self, &code, fun);
         }
-        self.idxs.fn_map[&code.entrypoint]
+        data::define_module_context(&mut self.m, &code, &mut self.idxs);
+        self.emit_entrypoint(&code)
+    }
+
+    fn emit_entrypoint(&mut self, code: &Code) -> FuncId {
+        let sig = self.m.make_signature();
+        let fun_id = self
+            .m
+            .declare_function("hl_entry_point", Linkage::Export, &sig)
+            .unwrap();
+        self.m.clear_context(&mut self.ctx);
+        let mut bcx = FunctionBuilder::new(&mut self.ctx.func, &mut self.f_ctx);
+        let entry_block = bcx.create_block();
+        bcx.seal_block(entry_block);
+        bcx.switch_to_block(entry_block);
+
+        let init_enum_id = self.idxs.native_calls["hl_init_enum"];
+        let init_enum_ref = self.m.declare_func_in_func(init_enum_id, &mut bcx.func);
+        let init_virtual_id = self.idxs.native_calls["hl_init_virtual"];
+        let init_virtual_ref = self.m.declare_func_in_func(init_virtual_id, &mut bcx.func);
+        let module_context_gv = self
+            .m
+            .declare_data_in_func(self.idxs.module_context_id, &mut bcx.func);
+        let module_context_val = bcx.ins().global_value(types::I64, module_context_gv);
+        for (ty, data) in &self.idxs.types {
+            match &code[*ty] {
+                HLType::Enum(_) => {
+                    let val = self.m.declare_data_in_func(*data, &mut bcx.func);
+                    let val = bcx.ins().global_value(types::I64, val);
+                    bcx.ins().call(init_enum_ref, &[val, module_context_val]);
+                }
+                HLType::Virtual(_) => {
+                    let val = self.m.declare_data_in_func(*data, &mut bcx.func);
+                    let val = bcx.ins().global_value(types::I64, val);
+                    bcx.ins().call(init_virtual_ref, &[val, module_context_val]);
+                }
+                _ => continue,
+            }
+        }
+
+        let hl_hash_id = self.idxs.native_calls["hl_hash"];
+        let hl_hash_ref = self.m.declare_func_in_func(hl_hash_id, &mut bcx.func);
+        for (str, locs) in &self.idxs.hash_locations {
+            let gv = self.m.declare_data_in_func(self.idxs.ustr[str], bcx.func);
+            let str_val = bcx.ins().global_value(types::I64, gv);
+            let inst = bcx.ins().call(hl_hash_ref, &[str_val]);
+            let hash = bcx.inst_results(inst)[0];
+            for (d, offset) in locs {
+                let gv = self.m.declare_data_in_func(*d, bcx.func);
+                let loc = bcx.ins().global_value(types::I64, gv);
+                bcx.ins()
+                    .store(MemFlags::trusted(), hash, loc, *offset as i32);
+            }
+        }
+
+        let f_ref = self
+            .m
+            .declare_func_in_func(self.idxs.fn_map[&code.entrypoint], &mut bcx.func);
+        bcx.ins().call(f_ref, &[]);
+        bcx.ins().return_(&[]);
+        bcx.finalize();
+        self.m.define_function(fun_id, &mut self.ctx).unwrap();
+        fun_id
     }
 }
 
