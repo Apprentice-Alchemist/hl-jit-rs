@@ -20,6 +20,7 @@ struct Indexes {
     fn_map: BTreeMap<FunIdx, FuncId>,
     globals: BTreeMap<GlobalIdx, DataId>,
     native_calls: BTreeMap<&'static str, FuncId>,
+    hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
 }
 
 // HL_API void hl_dyn_seti( vdynamic *d, int hfield, hl_type *t, int value );
@@ -105,6 +106,9 @@ impl<'a> CodegenCtx<'a> {
     pub fn compile(&mut self, code: Code) -> FuncId {
         data::declare(self.m, &code, &mut self.idxs).unwrap();
         build_native_calls(self.m, &mut self.idxs);
+        data::define_types(self.m, &code, &mut self.idxs);
+        data::define_globals(self.m, &code, &self.idxs);
+        data::define_strings(self.m, &code, &self.idxs);
         for fun in &code.functions {
             let mut signature = self.m.make_signature();
             fill_signature_ty(&code, &mut signature, fun.ty);

@@ -6,25 +6,28 @@ use cranelift::{
 };
 
 use crate::{
-    code::{Code, GlobalIdx, HLType, TypeFun, TypeIdx, TypeVirtual, UStrIdx},
-    sys::{hl_obj_field, hl_type, hl_type_fun, hl_type_kind, hl_type_virtual},
+    code::{Code, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx},
+    sys::{
+        hl_enum_construct, hl_obj_field, hl_obj_proto, hl_type, hl_type_enum, hl_type_fun,
+        hl_type_kind, hl_type_obj, hl_type_virtual,
+    },
 };
 
 use super::Indexes;
 
 pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<(), Box<dyn Error>> {
     for idx in 0..code.types.len() {
-        let id = m.declare_anonymous_data(true, false)?;
+        let id = m.declare_data(&format!("type{idx}"), Linkage::Local, true, false)?;
         idxs.types.insert(TypeIdx(idx), id);
     }
 
     for idx in 0..code.strings.len() {
-        let id = m.declare_anonymous_data(true, false)?;
+        let id = m.declare_data(&format!("str{idx}"), Linkage::Local, true, false)?;
         idxs.ustr.insert(UStrIdx(idx), id);
     }
 
     for idx in 0..code.globals.len() {
-        let id = m.declare_anonymous_data(true, false)?;
+        let id = m.declare_data(&format!("global{idx}"), Linkage::Local, true, false)?;
         idxs.globals.insert(GlobalIdx(idx), id);
     }
 
@@ -102,7 +105,7 @@ fn build_type_fun(m: &mut dyn Module, idxs: &Indexes, f: &TypeFun) -> Result<Dat
 
 fn build_field_arr(
     m: &mut dyn Module,
-    idxs: &Indexes,
+    idxs: &mut Indexes,
     fields: &[(UStrIdx, TypeIdx)],
 ) -> Result<DataId, ModuleError> {
     let id = m.declare_anonymous_data(true, false)?;
@@ -125,7 +128,49 @@ fn build_field_arr(
             size_of::<*mut hl_obj_field>() * pos + offset_of!(hl_obj_field, t),
         );
 
-        // TODO: hashed_name
+        idxs.hash_locations.entry(*ustr).or_default().push((
+            id,
+            size_of::<*mut hl_obj_field>() * pos + offset_of!(hl_obj_field, hashed_name),
+        ));
+    }
+    m.define_data(id, &data)?;
+    Ok(id)
+}
+fn build_proto_arr(
+    m: &mut dyn Module,
+    idxs: &mut Indexes,
+    fields: &[(UStrIdx, usize, isize)],
+) -> Result<DataId, ModuleError> {
+    let id = m.declare_anonymous_data(true, false)?;
+    let align = align_of::<hl_obj_proto>();
+    let mut data = DataDescription::new();
+    data.set_align(align as u64);
+    {
+        let mut buf = vec![0u8; size_of::<hl_obj_proto>() * fields.len()];
+        for (pos, chunk) in buf.chunks_mut(size_of::<hl_obj_proto>()).enumerate() {
+            let (_, findex, pindex) = fields[pos];
+            let findex: c_int = findex as c_int;
+            let pindex: c_int = pindex as c_int;
+            chunk[offset_of!(hl_obj_proto, findex)
+                ..offset_of!(hl_obj_proto, findex) + size_of::<c_int>()]
+                .copy_from_slice(&findex.to_ne_bytes());
+            chunk[offset_of!(hl_obj_proto, pindex)
+                ..offset_of!(hl_obj_proto, pindex) + size_of::<c_int>()]
+                .copy_from_slice(&pindex.to_ne_bytes());
+        }
+        data.define(buf.into_boxed_slice());
+    }
+    for (pos, (ustr, findex, pindex)) in fields.iter().enumerate() {
+        write_data(
+            m,
+            &mut data,
+            idxs.ustr[ustr],
+            size_of::<*mut hl_obj_field>() * pos + offset_of!(hl_obj_proto, name),
+        );
+        idxs.hash_locations.entry(*ustr).or_default().push((
+            id,
+            size_of::<*mut hl_obj_proto>() * pos + offset_of!(hl_obj_proto, hashed_name),
+        ));
     }
     m.define_data(id, &data)?;
     Ok(id)
@@ -133,13 +178,12 @@ fn build_field_arr(
 
 fn build_type_virtual(
     m: &mut dyn Module,
-    idxs: &Indexes,
+    idxs: &mut Indexes,
     virt: &TypeVirtual,
 ) -> Result<DataId, ModuleError> {
     let id = m.declare_anonymous_data(true, false)?;
     let fields_id = build_field_arr(m, idxs, &virt.fields)?;
-    let size = size_of::<*mut hl_type_virtual>();
-    let align = align_of::<*mut hl_type_virtual>();
+    let align = align_of::<hl_type_virtual>();
     let mut data = DataDescription::new();
     data.set_align(align as u64);
     let mut buf = vec![0u8; size_of::<hl_type_virtual>()];
@@ -147,12 +191,158 @@ fn build_type_virtual(
     buf[offset_of!(hl_type_virtual, nfields)
         ..offset_of!(hl_type_virtual, nfields) + size_of::<c_int>()]
         .copy_from_slice(&nfields.to_ne_bytes());
+    data.define(buf.into_boxed_slice());
     write_data(m, &mut data, fields_id, offset_of!(hl_type_virtual, fields));
     m.define_data(id, &data)?;
     Ok(id)
 }
 
-pub fn define_types(m: &mut dyn Module, code: &Code, idxs: &Indexes) -> Result<(), Box<dyn Error>> {
+fn build_type_obj(
+    m: &mut dyn Module,
+    idxs: &mut Indexes,
+    TypeObj {
+        name,
+        super_,
+        global,
+        fields,
+        protos,
+        bindings,
+    }: &TypeObj,
+) -> Result<DataId, ModuleError> {
+    let id = m.declare_anonymous_data(true, false)?;
+    let mut data = DataDescription::new();
+    {
+        let mut buf = vec![0u8; size_of::<hl_type_obj>()];
+        let nfields: c_int = fields.len() as c_int;
+        let nproto: c_int = protos.len() as c_int;
+        let nbindings: c_int = bindings.len() as c_int;
+        buf[offset_of!(hl_type_obj, nfields)
+            ..offset_of!(hl_type_obj, nfields) + size_of::<c_int>()]
+            .copy_from_slice(&nfields.to_ne_bytes());
+        buf[offset_of!(hl_type_obj, nproto)..offset_of!(hl_type_obj, nproto) + size_of::<c_int>()]
+            .copy_from_slice(&nproto.to_ne_bytes());
+        buf[offset_of!(hl_type_obj, nbindings)
+            ..offset_of!(hl_type_obj, nbindings) + size_of::<c_int>()]
+            .copy_from_slice(&nbindings.to_ne_bytes());
+        data.define(buf.into_boxed_slice());
+    }
+    write_data(m, &mut data, idxs.ustr[name], offset_of!(hl_type_obj, name));
+    if let Some(super_) = super_ {
+        write_data(
+            m,
+            &mut data,
+            idxs.types[super_],
+            offset_of!(hl_type_obj, super_),
+        );
+    }
+    let fields_id = build_field_arr(m, idxs, fields).unwrap();
+    write_data(m, &mut data, fields_id, offset_of!(hl_type_obj, fields));
+    let proto_id = build_proto_arr(m, idxs, protos).unwrap();
+    write_data(m, &mut data, proto_id, offset_of!(hl_type_obj, proto));
+    let bindings_id = {
+        let bindings_id = m.declare_anonymous_data(true, false).unwrap();
+        let mut data = DataDescription::new();
+        let mut buf = vec![0u8; size_of::<c_int>() * 2 * bindings.len()];
+        for (pos, chunk) in buf.chunks_mut(size_of::<c_int>() * 2).enumerate() {
+            let (fid, fidx) = bindings[pos];
+            let fid = fid as c_int;
+            let fidx = fidx as c_int;
+            chunk[0..size_of::<c_int>()].copy_from_slice(&fid.to_ne_bytes());
+            chunk[size_of::<c_int>()..].copy_from_slice(&fidx.to_ne_bytes());
+        }
+        data.define(buf.into_boxed_slice());
+        m.define_data(bindings_id, &data);
+        bindings_id
+    };
+    write_data(m, &mut data, bindings_id, offset_of!(hl_type_obj, bindings));
+    if let Some(global) = global {
+        write_data(m, &mut data, idxs.globals[global], offset_of!(hl_type_obj, global_value));
+    }
+    m.define_data(id, &data).unwrap();
+    Ok(id)
+}
+
+fn build_enum_constructs(
+    m: &mut dyn Module,
+    idxs: &mut Indexes,
+    constructs: &[(UStrIdx, Vec<TypeIdx>)],
+) -> DataId {
+    let id = m.declare_anonymous_data(true, false).unwrap();
+    let mut data = DataDescription::new();
+    {
+        let mut buf = vec![0u8; size_of::<hl_enum_construct>() * constructs.len()];
+
+        for (pos, chunk) in buf.chunks_mut(size_of::<hl_enum_construct>()).enumerate() {
+            let nparams = constructs[pos].1.len() as c_int;
+            chunk[offset_of!(hl_enum_construct, nparams)
+                ..offset_of!(hl_enum_construct, nparams) + size_of::<c_int>()]
+                .copy_from_slice(&nparams.to_ne_bytes());
+        }
+
+        data.define(buf.into_boxed_slice());
+    }
+    for (pos, (name, types)) in constructs.iter().enumerate() {
+        write_data(
+            m,
+            &mut data,
+            idxs.ustr[name],
+            pos * size_of::<hl_enum_construct>() + offset_of!(hl_enum_construct, name),
+        );
+        let id = build_type_arr(m, idxs, &types).unwrap();
+        write_data(
+            m,
+            &mut data,
+            id,
+            pos * size_of::<hl_enum_construct>() + offset_of!(hl_enum_construct, params),
+        );
+    }
+    id
+}
+
+fn build_type_enum(
+    m: &mut dyn Module,
+    idxs: &mut Indexes,
+    e: &TypeEnum,
+) -> Result<DataId, ModuleError> {
+    let id = m.declare_anonymous_data(true, false)?;
+    let mut data = DataDescription::new();
+    {
+        let mut buf = vec![0u8; size_of::<hl_type_enum>()];
+        let nconstructs = e.constructs.len() as c_int;
+        buf[offset_of!(hl_type_enum, nconstructs)
+            ..offset_of!(hl_type_enum, nconstructs) + size_of::<c_int>()]
+            .copy_from_slice(&nconstructs.to_ne_bytes());
+        data.define(buf.into_boxed_slice());
+    }
+    write_data(
+        m,
+        &mut data,
+        idxs.ustr[&e.name],
+        offset_of!(hl_type_enum, name),
+    );
+    let constructs_id = build_enum_constructs(m, idxs, &e.constructs);
+    write_data(
+        m,
+        &mut data,
+        constructs_id,
+        offset_of!(hl_type_enum, constructs),
+    );
+    if let Some(global_value) = e.global_value {
+        write_data(
+            m,
+            &mut data,
+            idxs.globals[&global_value],
+            offset_of!(hl_type_enum, global_value),
+        );
+    }
+    Ok(id)
+}
+
+pub fn define_types(
+    m: &mut dyn Module,
+    code: &Code,
+    idxs: &mut Indexes,
+) -> Result<(), Box<dyn Error>> {
     for (pos, ty) in code.types.iter().enumerate() {
         let id = m.declare_anonymous_data(true, false)?;
         let mut data = DataDescription::new();
@@ -173,18 +363,18 @@ pub fn define_types(m: &mut dyn Module, code: &Code, idxs: &Indexes) -> Result<(
             HLType::Boolean => None,
             HLType::Bytes => None,
             HLType::Dynamic => None,
-            HLType::Function(fun) => Some(build_type_fun(m, &idxs, fun)?),
-            HLType::Object(type_obj) => todo!(),
+            HLType::Function(fun) => Some(build_type_fun(m, idxs, fun)?),
+            HLType::Object(type_obj) => Some(build_type_obj(m, idxs, type_obj)?),
             HLType::Array => None,
             HLType::Type => None,
             HLType::Reference(type_idx) => Some(idxs.types[type_idx]),
-            HLType::Virtual(virt) => Some(build_type_virtual(m, &idxs, virt)?),
+            HLType::Virtual(virt) => Some(build_type_virtual(m, idxs, virt)?),
             HLType::Dynobj => None,
             HLType::Abstract(ustr_idx) => Some(idxs.ustr[ustr_idx]),
-            HLType::Enum(type_enum) => todo!(),
+            HLType::Enum(type_enum) => Some(build_type_enum(m, idxs, type_enum)?),
             HLType::Null(type_idx) => Some(idxs.types[type_idx]),
             HLType::Method(fun) => Some(build_type_fun(m, &idxs, fun)?),
-            HLType::Struct(type_obj) => todo!(),
+            HLType::Struct(type_obj) => Some(build_type_obj(m, idxs, type_obj)?),
             HLType::Packed(type_idx) => Some(idxs.types[type_idx]),
             HLType::Guid => None,
         };
@@ -197,7 +387,16 @@ pub fn define_types(m: &mut dyn Module, code: &Code, idxs: &Indexes) -> Result<(
                 offset_of!(hl_type, __bindgen_anon_1),
             )
         }
+        println!("type{}", pos);
         m.define_data(id, &data)?;
     }
     Ok(())
+}
+
+pub fn define_globals(m: &mut dyn Module, code: &Code, idxs: &Indexes) {
+    for (gidx, id) in &idxs.globals {
+        let mut data = DataDescription::new();
+        data.define_zeroinit(8);
+        m.define_data(*id, &data).unwrap();
+    }
 }

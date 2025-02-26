@@ -167,7 +167,7 @@ impl Readable for GlobalIdx {
 pub struct TypeObj {
     pub name: UStrIdx,
     pub super_: Option<TypeIdx>,
-    pub global: usize,
+    pub global: Option<GlobalIdx>,
     pub fields: Vec<(UStrIdx, TypeIdx)>,
     pub protos: Vec<(UStrIdx, usize, isize)>,
     pub bindings: Vec<(usize, usize)>,
@@ -182,7 +182,7 @@ pub struct TypeFun {
 #[derive(Clone, Debug)]
 pub struct TypeEnum {
     pub name: UStrIdx,
-    pub global_value: usize,
+    pub global_value: Option<GlobalIdx>,
     pub constructs: Vec<(UStrIdx, Vec<TypeIdx>)>,
 }
 
@@ -226,6 +226,27 @@ impl HLType {
             Self::Void => hl_type_kind_HVOID,
             Self::UInt8 => hl_type_kind_HUI8,
             Self::UInt16 => hl_type_kind_HUI16,
+            Self::Int32 => hl_type_kind_HI32,
+            Self::Int64 => hl_type_kind_HI64,
+            Self::Float32 => hl_type_kind_HF32,
+            Self::Float64 => hl_type_kind_HF64,
+            Self::Boolean => hl_type_kind_HBOOL,
+            Self::Bytes => hl_type_kind_HBYTES,
+            Self::Dynamic => hl_type_kind_HDYN,
+            Self::Function(_) => hl_type_kind_HFUN,
+            Self::Object(_) => hl_type_kind_HOBJ,
+            Self::Array => hl_type_kind_HARRAY,
+            Self::Type => hl_type_kind_HTYPE,
+            Self::Reference(_) => hl_type_kind_HREF,
+            Self::Virtual(_) => hl_type_kind_HVIRTUAL,
+            Self::Dynobj => hl_type_kind_HDYNOBJ,
+            Self::Abstract(_) => hl_type_kind_HABSTRACT,
+            Self::Enum(_) => hl_type_kind_HENUM,
+            Self::Null(_) => hl_type_kind_HNULL,
+            Self::Method(_) => hl_type_kind_HMETHOD,
+            Self::Struct(_) => hl_type_kind_HSTRUCT,
+            Self::Packed(_) => hl_type_kind_HPACKED,
+            Self::Guid => hl_type_kind_HGUID,
             _ => todo!(),
         }
     }
@@ -267,7 +288,7 @@ impl HLType {
     pub fn type_obj(&self) -> Option<&TypeObj> {
         match self {
             Self::Struct(obj) | Self::Object(obj) => Some(obj),
-            _ => None
+            _ => None,
         }
     }
 
@@ -287,6 +308,11 @@ fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
         }
     };
     let global = r.udx()?;
+    let global = if global == 0 {
+        None
+    } else {
+        Some(GlobalIdx(global - 1))
+    };
     let nfields = r.udx()?;
     let nproto = r.udx()?;
     let nbindings = r.udx()?;
@@ -336,6 +362,11 @@ fn read_type_virtual(r: &mut Reader) -> io::Result<TypeVirtual> {
 fn read_type_enum(r: &mut Reader) -> io::Result<TypeEnum> {
     let name: UStrIdx = r.r()?;
     let global_value = r.udx()?;
+    let global_value = if global_value == 0 {
+        None
+    } else {
+        Some(GlobalIdx(global_value - 1))
+    };
     let nconstructs = r.udx()?;
     let constructs = r.vec(nconstructs, |r| {
         let name = r.r()?;

@@ -6,6 +6,7 @@ use std::error::Error;
 mod code;
 mod codegen;
 mod jit;
+mod object;
 mod opcode;
 mod sys {
     #![allow(non_upper_case_globals)]
@@ -23,11 +24,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let reader = Reader::open_file(file)?;
     let code = crate::code::read_code(reader)?;
 
-    let (m, entrypoint) = crate::jit::compile_module(code);
-    unsafe {
-        let entrypoint: extern "C" fn() =
-            core::mem::transmute(m.get_finalized_function(entrypoint));
-        entrypoint();
-    }
+    let product = crate::object::compile_module(code);
+    let bytes = product.emit()?;
+    std::fs::write("foo.o", bytes);
+    // let (m, entrypoint) = crate::jit::compile_module(code);
+    // unsafe {
+    //     let entrypoint: extern "C" fn() =
+    //         core::mem::transmute(m.get_finalized_function(entrypoint));
+    //     entrypoint();
+    // }
     Ok(())
 }

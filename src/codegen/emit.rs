@@ -195,7 +195,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn translate_body(&mut self) {
-        println!("function body, length: {}", self.fun.opcodes.len());
+        // println!("function body, length: {}", self.fun.opcodes.len());
         let mut has_switched = true;
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
             self.pos = pos;
@@ -220,7 +220,7 @@ impl<'a> EmitCtx<'a> {
                     }
                 }
             }
-            println!("  {op:?} in block {:?}", self.current_block().unwrap());
+            // println!("  {op:?} in block {:?}", self.current_block().unwrap());
             self.set_srcloc(SourceLoc::new(pos.try_into().unwrap()));
             match op {
                 OpCode::Mov { dst, src } => {
@@ -1002,7 +1002,6 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
         }
-        dbg!(&self.blocks);
         self.seal_all_blocks();
     }
 
@@ -1150,7 +1149,6 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn finish(self) {
-        println!("{}", self.builder.func.display());
         self.builder.finalize();
     }
 }
