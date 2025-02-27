@@ -564,7 +564,19 @@ impl<'a> EmitCtx<'a> {
                     }
                 }
                 OpCode::StaticClosure { dst, fid } => self.trap(op),
-                OpCode::InstanceClosure { dst, obj, idx } => self.trap(op),
+                OpCode::InstanceClosure { dst, idx, obj } => {
+                    let alloc_id = self.idxs.native_calls["hl_alloc_closure_ptr"];
+                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let ty_id = self.idxs.fn_type_map[idx];
+                    let ty = self.m.declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, ty);
+                    let func_id = self.idxs.fn_map[idx];
+                    let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                    let func_addr = self.ins().func_addr(types::I64, func_ref);
+                    let obj_val = self.load_reg(obj);
+                    let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
+                    self.store_reg(dst, self.inst_results(inst)[0]);
+                }
                 OpCode::VirtualClosure { dst, obj, idx } => self.trap(op),
                 OpCode::GetGlobal { dst, idx } => {
                     let global_value = self
@@ -580,8 +592,6 @@ impl<'a> EmitCtx<'a> {
                         .m
                         .declare_data_in_func(self.idxs.globals[idx], self.builder.func);
                     let global_value = self.ins().symbol_value(types::I64, global_value);
-                    // let ty = self.reg_type(dst).cranelift_type();
-                    // let global_addr = self.ins().load(ty, MemFlags::new(), global_value, 0);
                     let val = self.load_reg(val);
                     self.ins().store(MemFlags::new(), val, global_value, 0);
                 }
@@ -604,11 +614,7 @@ impl<'a> EmitCtx<'a> {
                             //      hl_dyn_set(obj,hash(field),vt,val)
 
                             let obj_val = self.load_reg(obj);
-                            // let field_addr = self.ins().iadd_imm(
-                            //     obj_val,
-                            //     size_of::<vvirtual>() as i64
-                            //         + (fid.0 as usize * size_of::<usize>()) as i64,
-                            // );
+
                             let field_addr = self.ins().load(
                                 types::I64,
                                 MemFlags::new(),
@@ -771,31 +777,31 @@ impl<'a> EmitCtx<'a> {
                         self.store_reg(dst, self.inst_results(inst)[0]);
                     }
                     ty => {
-                        // TODO: deduplicate code
-                        if ty.is_ptr() {
-                            let val_val = self.load_reg(val);
+                        let is_ptr = ty.is_ptr();
+                        let val_val = self.load_reg(val);
+                        let emit_alloc_dynamic = |ecx: &mut EmitCtx<'_>| {
+                            let func_id = ecx.idxs.native_calls["hl_alloc_dynamic"];
+                            let func_ref = ecx.m.declare_func_in_func(func_id, ecx.builder.func);
+                            let gv = ecx.m.declare_data_in_func(
+                                ecx.idxs.types[&ecx.fun[*val]],
+                                ecx.builder.func,
+                            );
+                            let clir_ty = ecx.ins().global_value(types::I64, gv);
+                            let inst = ecx.ins().call(func_ref, &[clir_ty]);
+                            let dyn_val = ecx.inst_results(inst)[0];
+                            ecx.ins().store(
+                                MemFlags::new(),
+                                val_val,
+                                dyn_val,
+                                offset_of!(vdynamic, v) as i32,
+                            );
+                            ecx.store_reg(dst, dyn_val);
+                        };
+                        if is_ptr {
                             let next_block = self.next_block();
                             self.emit_brif(
                                 val_val,
-                                |ecx| {
-                                    let func_id = ecx.idxs.native_calls["hl_alloc_dynamic"];
-                                    let func_ref =
-                                        ecx.m.declare_func_in_func(func_id, ecx.builder.func);
-                                    let gv = ecx.m.declare_data_in_func(
-                                        ecx.idxs.types[&ecx.fun[*val]],
-                                        ecx.builder.func,
-                                    );
-                                    let clir_ty = ecx.ins().global_value(types::I64, gv);
-                                    let inst = ecx.ins().call(func_ref, &[clir_ty]);
-                                    let dyn_val = ecx.inst_results(inst)[0];
-                                    ecx.ins().store(
-                                        MemFlags::new(),
-                                        val_val,
-                                        dyn_val,
-                                        offset_of!(vdynamic, v) as i32,
-                                    );
-                                    ecx.store_reg(dst, dyn_val);
-                                },
+                                emit_alloc_dynamic,
                                 |ecx| {
                                     let null = ecx.ins().iconst(types::I64, 0);
                                     ecx.store_reg(dst, null);
@@ -803,23 +809,7 @@ impl<'a> EmitCtx<'a> {
                                 next_block,
                             );
                         } else {
-                            let val_val = self.load_reg(val);
-                            let func_id = self.idxs.native_calls["hl_alloc_dynamic"];
-                            let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
-                            let gv = self.m.declare_data_in_func(
-                                self.idxs.types[&self.fun[*val]],
-                                self.builder.func,
-                            );
-                            let clir_ty = self.ins().global_value(types::I64, gv);
-                            let inst = self.ins().call(func_ref, &[clir_ty]);
-                            let dyn_val = self.inst_results(inst)[0];
-                            self.ins().store(
-                                MemFlags::new(),
-                                val_val,
-                                dyn_val,
-                                offset_of!(vdynamic, v) as i32,
-                            );
-                            self.store_reg(dst, dyn_val);
+                            emit_alloc_dynamic(self);
                         }
                     }
                 },

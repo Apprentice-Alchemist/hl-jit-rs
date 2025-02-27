@@ -638,8 +638,8 @@ pub enum OpCode {
     },
     InstanceClosure {
         dst: Reg,
+        idx: FunIdx,
         obj: Reg,
-        idx: Idx,
     },
     VirtualClosure {
         dst: Reg,
