@@ -7,7 +7,7 @@ use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
 
 use crate::code::TypeFun;
-use crate::sys::vdynamic;
+use crate::sys::{vclosure, vdynamic};
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
@@ -180,7 +180,7 @@ impl<'a> EmitCtx<'a> {
                     HLType::Float32 => Layout::new::<f32>(),
                     HLType::Float64 => Layout::new::<f64>(),
                     HLType::Boolean => Layout::new::<bool>(),
-                    _ => Layout::new::<*mut u8>()
+                    _ => Layout::new::<*mut u8>(),
                 };
                 let (new_layout, offset) = layout.extend(field_layout).unwrap();
                 layout = new_layout;
@@ -484,7 +484,85 @@ impl<'a> EmitCtx<'a> {
                     _ => unimplemented!("OCallMethod only works with HObj or HVirt"),
                 },
                 OpCode::CallThis { dst, fid, args } => self.trap(op),
-                OpCode::CallClosure { dst, closure, args } => self.trap(op),
+                OpCode::CallClosure { dst, closure, args } => {
+                    // self.ins().debugtrap();
+                    match self.reg_type(closure) {
+                        HLType::Dynamic => {
+                            //	vdynamic *args[] = {args};
+                            //  vdynamic *ret = hl_dyn_call(closure,args,nargs);
+                            //  dst = hl_dyncast(ret,t_dynamic,t_dst);
+                            // }
+                            self.trap(op);
+                        }
+                        _ => {
+                            // if( c->hasValue ) c->fun(value,args) else c->fun(args)
+                            let closure_val = self.load_reg(closure);
+                            let has_value_val = self.ins().load(
+                                types::I8,
+                                MemFlags::trusted(),
+                                closure_val,
+                                offset_of!(vclosure, hasValue) as i32,
+                            );
+                            let fun_ptr = self.ins().load(
+                                types::I64,
+                                MemFlags::trusted(),
+                                closure_val,
+                                offset_of!(vclosure, fun) as i32,
+                            );
+                            let next_block = self.next_block();
+                            self.emit_brif(
+                                has_value_val,
+                                |ecx| {
+                                    let this_val = ecx.ins().load(
+                                        types::I64,
+                                        MemFlags::trusted(),
+                                        closure_val,
+                                        offset_of!(vclosure, value) as i32,
+                                    );
+                                    let mut sig = ecx.m.make_signature();
+                                    sig.params.push(AbiParam::new(types::I64));
+                                    super::fill_signature(
+                                        ecx.code,
+                                        &mut sig,
+                                        &args
+                                            .iter()
+                                            .map(|reg| ecx.fun[*reg])
+                                            .collect::<Vec<TypeIdx>>(),
+                                        ecx.fun[*dst],
+                                    );
+                                    let mut vargs = Vec::new();
+                                    vargs.push(this_val);
+                                    vargs.extend(args.iter().map(|a| ecx.load_reg(a)));
+                                    let sig_ref = ecx.import_signature(sig);
+                                    let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                                    if !ecx.reg_type(dst).is_void() {
+                                        ecx.store_reg(dst, ecx.builder.inst_results(i)[0]);
+                                    }
+                                },
+                                |ecx| {
+                                    let mut sig = ecx.m.make_signature();
+                                    super::fill_signature(
+                                        ecx.code,
+                                        &mut sig,
+                                        &args
+                                            .iter()
+                                            .map(|reg| ecx.fun[*reg])
+                                            .collect::<Vec<TypeIdx>>(),
+                                        ecx.fun[*dst],
+                                    );
+                                    let mut vargs = Vec::new();
+                                    vargs.extend(args.iter().map(|a| ecx.load_reg(a)));
+                                    let sig_ref = ecx.import_signature(sig);
+                                    let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                                    if !ecx.reg_type(dst).is_void() {
+                                        ecx.store_reg(dst, ecx.builder.inst_results(i)[0]);
+                                    }
+                                },
+                                next_block,
+                            );
+                        }
+                    }
+                }
                 OpCode::StaticClosure { dst, fid } => self.trap(op),
                 OpCode::InstanceClosure { dst, obj, idx } => self.trap(op),
                 OpCode::VirtualClosure { dst, obj, idx } => self.trap(op),
@@ -526,10 +604,17 @@ impl<'a> EmitCtx<'a> {
                             //      hl_dyn_set(obj,hash(field),vt,val)
 
                             let obj_val = self.load_reg(obj);
-                            let field_addr = self.ins().iadd_imm(
+                            // let field_addr = self.ins().iadd_imm(
+                            //     obj_val,
+                            //     size_of::<vvirtual>() as i64
+                            //         + (fid.0 as usize * size_of::<usize>()) as i64,
+                            // );
+                            let field_addr = self.ins().load(
+                                types::I64,
+                                MemFlags::new(),
                                 obj_val,
-                                size_of::<vvirtual>() as i64
-                                    + (fid.0 as usize * size_of::<usize>()) as i64,
+                                size_of::<vvirtual>() as i32
+                                    + (fid.0 as usize * size_of::<usize>()) as i32,
                             );
 
                             let next_block = self.next_block();
@@ -537,7 +622,7 @@ impl<'a> EmitCtx<'a> {
                                 field_addr,
                                 |this| {
                                     let ty = this.reg_type(dst).cranelift_type();
-                                    let val = this.ins().load(ty, MemFlags::new(), obj_val, 0);
+                                    let val = this.ins().load(ty, MemFlags::new(), field_addr, 0);
                                     this.store_reg(dst, val);
                                 },
                                 |this| {
@@ -709,6 +794,7 @@ impl<'a> EmitCtx<'a> {
                                         dyn_val,
                                         offset_of!(vdynamic, v) as i32,
                                     );
+                                    ecx.store_reg(dst, dyn_val);
                                 },
                                 |ecx| {
                                     let null = ecx.ins().iconst(types::I64, 0);
@@ -733,6 +819,7 @@ impl<'a> EmitCtx<'a> {
                                 dyn_val,
                                 offset_of!(vdynamic, v) as i32,
                             );
+                            self.store_reg(dst, dyn_val);
                         }
                     }
                 },
@@ -1108,17 +1195,19 @@ impl<'a> EmitCtx<'a> {
         let dyn_get_ref = self
             .m
             .declare_func_in_func(self.idxs.native_calls[dyn_get_name], self.builder.func);
-        let virt_ty = self
-            .m
-            .declare_data_in_func(self.idxs.types[&self.fun[*obj]], self.builder.func);
-        let virt_ty_val = self.ins().global_value(types::I64, virt_ty);
+
         let inst = match &self.code[self.fun[*dst]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => {
                 self.ins().call(dyn_get_ref, &[obj_val, hashed_field])
             }
-            _ => self
-                .ins()
-                .call(dyn_get_ref, &[obj_val, hashed_field, virt_ty_val]),
+            _ => {
+                let dst_ty = self
+                    .m
+                    .declare_data_in_func(self.idxs.types[&self.fun[*dst]], self.builder.func);
+                let dst_ty_val = self.ins().global_value(types::I64, dst_ty);
+                self.ins()
+                    .call(dyn_get_ref, &[obj_val, hashed_field, dst_ty_val])
+            }
         };
         let dst_val = self.inst_results(inst)[0];
         self.store_reg(dst, dst_val);
@@ -1148,17 +1237,19 @@ impl<'a> EmitCtx<'a> {
         let dyn_set_ref = self
             .m
             .declare_func_in_func(self.idxs.native_calls[dyn_set_name], self.builder.func);
-        let virt_ty = self
-            .m
-            .declare_data_in_func(self.idxs.types[&self.fun[*obj]], self.builder.func);
-        let virt_ty_val = self.ins().global_value(types::I64, virt_ty);
+
         match &self.code[self.fun[*val]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => self
                 .ins()
                 .call(dyn_set_ref, &[obj_val, hashed_field, val_val]),
-            _ => self
-                .ins()
-                .call(dyn_set_ref, &[obj_val, hashed_field, virt_ty_val, val_val]),
+            _ => {
+                let gv = self
+                    .m
+                    .declare_data_in_func(self.idxs.types[&self.fun[*val]], self.builder.func);
+                let val_ty = self.ins().global_value(types::I64, gv);
+                self.ins()
+                    .call(dyn_set_ref, &[obj_val, hashed_field, val_ty, val_val])
+            }
         };
     }
 
