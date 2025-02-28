@@ -201,8 +201,8 @@ pub fn read_opcode(r: &mut Reader) -> io::Result<OpCode> {
         },
         34 => InstanceClosure {
             dst: r.r()?,
-            obj: r.r()?,
             idx: r.r()?,
+            obj: r.r()?,
         },
         35 => VirtualClosure {
             dst: r.r()?,
@@ -634,7 +634,7 @@ pub enum OpCode {
 
     StaticClosure {
         dst: Reg,
-        fid: Idx,
+        fid: FunIdx,
     },
     InstanceClosure {
         dst: Reg,

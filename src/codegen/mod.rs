@@ -18,6 +18,7 @@ struct Indexes {
     types: BTreeMap<TypeIdx, DataId>,
     ustr: BTreeMap<UStrIdx, DataId>,
     fn_map: BTreeMap<FunIdx, FuncId>,
+    fn_type_map: BTreeMap<FunIdx, TypeIdx>,
     globals: BTreeMap<GlobalIdx, DataId>,
     native_calls: BTreeMap<&'static str, FuncId>,
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
@@ -79,6 +80,7 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("hl_alloc_dynbool", &[types::I8], &[types::I64]),
     ("hl_alloc_dynamic", &[types::I64], &[types::I64]),
     ("hl_add_root", &[types::I64], &[]),
+    ("hl_alloc_closure_ptr", &[types::I64, types::I64, types::I64], &[types::I64])
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -109,6 +111,7 @@ impl<'a> CodegenCtx<'a> {
             types: Default::default(),
             ustr: Default::default(),
             fn_map: Default::default(),
+            fn_type_map: Default::default(),
             globals: Default::default(),
             native_calls: Default::default(),
             hash_locations: Default::default(),
@@ -130,8 +133,12 @@ impl<'a> CodegenCtx<'a> {
         for fun in &code.functions {
             let mut signature = self.m.make_signature();
             fill_signature_ty(&code, &mut signature, fun.ty);
-            let id = self.m.declare_anonymous_function(&signature).unwrap();
+            let id = self
+                .m
+                .declare_function(&format!("fun@{}", fun.idx.0), Linkage::Local, &signature)
+                .unwrap();
             self.idxs.fn_map.insert(fun.idx, id);
+            self.idxs.fn_type_map.insert(fun.idx, fun.ty);
         }
         for (lib, name, ty, fun_idx) in &code.natives {
             let lib = match &code[*lib] {
@@ -150,6 +157,7 @@ impl<'a> CodegenCtx<'a> {
                 .declare_function(&symbol_name, Linkage::Import, &signature)
                 .unwrap();
             self.idxs.fn_map.insert(*fun_idx, id);
+            self.idxs.fn_type_map.insert(*fun_idx, *ty);
         }
         for fun in code.functions.iter() {
             emit::emit_fun(self, &code, fun);
@@ -172,11 +180,12 @@ impl<'a> CodegenCtx<'a> {
 
         let hl_alloc_id = self.idxs.native_calls["hl_alloc_init"];
         let hl_alloc_ref = self.m.declare_func_in_func(hl_alloc_id, bcx.func);
-        let module_context = self.m.declare_data_in_func(self.idxs.module_context_id, bcx.func);
+        let module_context = self
+            .m
+            .declare_data_in_func(self.idxs.module_context_id, bcx.func);
         let module_context_val = bcx.ins().global_value(types::I64, module_context);
         assert_eq!(offset_of!(hl_module_context, alloc), 0);
         bcx.ins().call(hl_alloc_ref, &[module_context_val]);
-
 
         let init_enum_id = self.idxs.native_calls["hl_init_enum"];
         let init_enum_ref = self.m.declare_func_in_func(init_enum_id, &mut bcx.func);

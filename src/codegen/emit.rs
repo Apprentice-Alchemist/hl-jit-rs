@@ -563,12 +563,29 @@ impl<'a> EmitCtx<'a> {
                         }
                     }
                 }
-                OpCode::StaticClosure { dst, fid } => self.trap(op),
+                OpCode::StaticClosure { dst, fid } => {
+                    // TODO: avoid allocation
+                    let alloc_id = self.idxs.native_calls["hl_alloc_closure_ptr"];
+                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let ty_id = self.idxs.fn_type_map[fid];
+                    let ty = self
+                        .m
+                        .declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, ty);
+                    let func_id = self.idxs.fn_map[fid];
+                    let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                    let func_addr = self.ins().func_addr(types::I64, func_ref);
+                    let obj_val = self.ins().iconst(types::I64, 0);
+                    let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
+                    self.store_reg(dst, self.inst_results(inst)[0]);
+                }
                 OpCode::InstanceClosure { dst, idx, obj } => {
                     let alloc_id = self.idxs.native_calls["hl_alloc_closure_ptr"];
                     let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
                     let ty_id = self.idxs.fn_type_map[idx];
-                    let ty = self.m.declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
+                    let ty = self
+                        .m
+                        .declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
                     let ty_val = self.ins().global_value(types::I64, ty);
                     let func_id = self.idxs.fn_map[idx];
                     let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
