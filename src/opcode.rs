@@ -903,7 +903,7 @@ pub enum OpCode {
     RefOffset {
         dst: Reg,
         r: Reg,
-        off: Idx,
+        off: Reg,
     },
     Nop,
     Prefetch {

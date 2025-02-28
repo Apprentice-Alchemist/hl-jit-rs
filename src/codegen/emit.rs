@@ -1,4 +1,5 @@
 use std::alloc::Layout;
+use std::ffi::c_int;
 use std::{collections::BTreeMap, mem::offset_of};
 
 use cranelift::codegen::ir::{BlockCall, Inst, SourceLoc, ValueListPool};
@@ -7,7 +8,7 @@ use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
 
 use crate::code::TypeFun;
-use crate::sys::{vclosure, vdynamic};
+use crate::sys::{vclosure, vdynamic, venum};
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
     opcode::{Idx, OpCode, Reg},
@@ -42,6 +43,7 @@ struct EmitCtx<'a> {
     // position of current HL opcode
     pos: usize,
     field_offsets: BTreeMap<TypeIdx, Vec<u32>>,
+    enum_offsets: BTreeMap<(TypeIdx, usize), Vec<u32>>,
     regs: BTreeMap<Reg, (StackSlot, Type)>,
 }
 
@@ -122,6 +124,7 @@ impl<'a> EmitCtx<'a> {
             blocks,
             pos: 0,
             field_offsets: BTreeMap::new(),
+            enum_offsets: BTreeMap::new(),
             regs,
         }
     }
@@ -146,6 +149,36 @@ impl<'a> EmitCtx<'a> {
     fn trap(&mut self, code: &OpCode) {
         let value = self.ins().iconst(types::I64, 0);
         self.ins().debugtrap();
+    }
+
+    fn lookup_enum_offset(&mut self, ty: TypeIdx, construct_idx: usize, field_idx: usize) -> u32 {
+        if let Some(offsets) = self.enum_offsets.get(&(ty, construct_idx)) {
+            return offsets[field_idx];
+        }
+
+        let mut offsets = Vec::<u32>::new();
+        let construct = &self.code[ty].type_enum().unwrap().constructs[construct_idx];
+        let mut layout = Layout::new::<*mut u8>();
+        let (mut layout, mut offset) = layout.extend(Layout::new::<c_int>()).unwrap();
+
+        for (pos, ty) in construct.1.iter().enumerate() {
+            let field_layout = match &self.code[*ty] {
+                HLType::UInt8 => Layout::new::<u8>(),
+                HLType::UInt16 => Layout::new::<u16>(),
+                HLType::Int32 => Layout::new::<i32>(),
+                HLType::Int64 => Layout::new::<i64>(),
+                HLType::Float32 => Layout::new::<f32>(),
+                HLType::Float64 => Layout::new::<f64>(),
+                HLType::Boolean => Layout::new::<bool>(),
+                _ => Layout::new::<*mut u8>(),
+            };
+            (layout, offset) = layout.extend(field_layout).unwrap();
+            offsets.push(offset.try_into().unwrap())
+        }
+        let offset = offsets[field_idx];
+        self.enum_offsets.insert((ty, construct_idx), offsets);
+
+        offset
     }
 
     fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
@@ -208,7 +241,6 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn translate_body(&mut self) {
-        // println!("function body, length: {}", self.fun.opcodes.len());
         let mut has_switched = true;
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
             self.pos = pos;
@@ -226,14 +258,12 @@ impl<'a> EmitCtx<'a> {
                                 self.ins().jump(block, &[]);
                             }
                             self.switch_to_block(block);
-                            // panic!()
                         }
                     } else {
                         unreachable!()
                     }
                 }
             }
-            // println!("  {op:?} in block {:?}", self.current_block().unwrap());
             self.set_srcloc(SourceLoc::new(pos.try_into().unwrap()));
             match op {
                 OpCode::Mov { dst, src } => {
@@ -258,7 +288,18 @@ impl<'a> EmitCtx<'a> {
                     let val = self.ins().iconst(types::I8, *val as i64);
                     self.store_reg(dst, val)
                 }
-                OpCode::Bytes { dst, idx } => self.trap(op),
+                OpCode::Bytes { dst, idx } => {
+                    let gval = if self.code.version >= 5 {
+                        todo!("handle OBytes for version >= 5")
+                    } else {
+                        self.m.declare_data_in_func(
+                            self.idxs.ustr[&UStrIdx(idx.0 as usize)],
+                            self.builder.func,
+                        )
+                    };
+                    let val = self.ins().global_value(types::I64, gval);
+                    self.store_reg(dst, val);
+                }
                 OpCode::String { dst, idx } => {
                     let gval = self
                         .m
@@ -1153,23 +1194,91 @@ impl<'a> EmitCtx<'a> {
                     dst,
                     construct_idx,
                     params,
-                } => self.trap(op),
-                OpCode::EnumAlloc { dst, idx } => self.trap(op),
-                OpCode::EnumIndex { dst, val } => self.trap(op),
+                } => {
+                    let alloc_id = self.idxs.native_calls["hl_alloc_enum"];
+                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let ty = self.idxs.types[&self.fun[*dst]];
+                    let gv = self.m.declare_data_in_func(ty, self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let idx_val = self.ins().iconst(types::I32, construct_idx.0 as i64);
+                    let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
+                    let enum_val = self.builder.inst_results(inst)[0];
+                    for (pos, param) in params.iter().enumerate() {
+                        let offset =
+                            self.lookup_enum_offset(self.fun[*dst], construct_idx.0 as usize, pos);
+                        let val = self.load_reg(param);
+                        self.ins()
+                            .store(MemFlags::new(), val, enum_val, offset as i32);
+                    }
+                    self.store_reg(dst, enum_val);
+                }
+                OpCode::EnumAlloc { dst, idx } => {
+                    let alloc_id = self.idxs.native_calls["hl_alloc_enum"];
+                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let ty = self.idxs.types[&self.fun[*dst]];
+                    let gv = self.m.declare_data_in_func(ty, self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let idx_val = self.ins().iconst(types::I32, idx.0 as i64);
+                    let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
+                    self.store_reg(dst, self.builder.inst_results(inst)[0]);
+                }
+                OpCode::EnumIndex { dst, val } => {
+                    let enum_val = self.load_reg(val);
+                    let idx = self.ins().load(
+                        types::I32,
+                        MemFlags::new(),
+                        enum_val,
+                        offset_of!(venum, index) as i32,
+                    );
+                    self.store_reg(dst, idx);
+                }
                 OpCode::EnumField {
                     dst,
                     obj,
                     construct_idx,
                     field_idx,
-                } => self.trap(op),
+                } => {
+                    let offset = self.lookup_enum_offset(
+                        self.fun[*obj],
+                        construct_idx.0 as usize,
+                        field_idx.0 as usize,
+                    );
+                    let dst_ty = self.reg_type(dst).cranelift_type();
+                    let obj_val = self.load_reg(obj);
+                    let val = self
+                        .ins()
+                        .load(dst_ty, MemFlags::new(), obj_val, offset as i32);
+                    self.store_reg(dst, val);
+                }
                 OpCode::SetEnumField {
                     obj,
                     field_idx,
                     val,
-                } => self.trap(op),
+                } => {
+                    let enum_val = self.load_reg(obj);
+                    let offset = self.lookup_enum_offset(self.fun[*obj], 0, field_idx.0 as usize);
+                    let val = self.load_reg(val);
+                    self.ins()
+                        .store(MemFlags::new(), val, enum_val, offset as i32);
+                }
                 OpCode::Assert => self.trap(op),
-                OpCode::RefData { dst, r } => self.trap(op),
-                OpCode::RefOffset { dst, r, off } => self.trap(op),
+                OpCode::RefData { dst, r } => match self.reg_type(r) {
+                    HLType::Array => {
+                        let r = self.load_reg(r);
+                        let addr = self.ins().iadd_imm(r, size_of::<varray>() as i64);
+                        self.store_reg(dst, addr);
+                    }
+                    _ => panic!("ORefData only supports arrays"),
+                },
+                OpCode::RefOffset { dst, r, off } => {
+                    let ty = self.reg_type(dst).cranelift_type();
+                    let r = self.load_reg(r);
+                    let off = self.load_reg(off);
+                    let off = self.ins().imul_imm(off, ty.bytes() as i64);
+                    let addr = self.ins().iadd(r, off);
+                    let val = self.ins().load(ty, MemFlags::new(), addr, 0);
+                    self.store_reg(dst, val);
+                }
                 OpCode::Nop => (),
                 OpCode::Prefetch { args } => panic!("unsupported instruction: OPrefetch"),
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),

@@ -80,7 +80,12 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
     ("hl_alloc_dynbool", &[types::I8], &[types::I64]),
     ("hl_alloc_dynamic", &[types::I64], &[types::I64]),
     ("hl_add_root", &[types::I64], &[]),
-    ("hl_alloc_closure_ptr", &[types::I64, types::I64, types::I64], &[types::I64])
+    (
+        "hl_alloc_closure_ptr",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    ),
+    ("hl_alloc_enum", &[types::I64, types::I32], &[types::I64]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -187,6 +192,21 @@ impl<'a> CodegenCtx<'a> {
         assert_eq!(offset_of!(hl_module_context, alloc), 0);
         bcx.ins().call(hl_alloc_ref, &[module_context_val]);
 
+        let hl_hash_id = self.idxs.native_calls["hl_hash"];
+        let hl_hash_ref = self.m.declare_func_in_func(hl_hash_id, &mut bcx.func);
+        for (str, locs) in &self.idxs.hash_locations {
+            let gv = self.m.declare_data_in_func(self.idxs.ustr[str], bcx.func);
+            let str_val = bcx.ins().global_value(types::I64, gv);
+            let inst = bcx.ins().call(hl_hash_ref, &[str_val]);
+            let hash = bcx.inst_results(inst)[0];
+            for (d, offset) in locs {
+                let gv = self.m.declare_data_in_func(*d, bcx.func);
+                let loc = bcx.ins().global_value(types::I64, gv);
+                bcx.ins()
+                    .store(MemFlags::trusted(), hash, loc, *offset as i32);
+            }
+        }
+
         let init_enum_id = self.idxs.native_calls["hl_init_enum"];
         let init_enum_ref = self.m.declare_func_in_func(init_enum_id, &mut bcx.func);
         let init_virtual_id = self.idxs.native_calls["hl_init_virtual"];
@@ -208,21 +228,6 @@ impl<'a> CodegenCtx<'a> {
                     bcx.ins().call(init_virtual_ref, &[val, module_context_val]);
                 }
                 _ => continue,
-            }
-        }
-
-        let hl_hash_id = self.idxs.native_calls["hl_hash"];
-        let hl_hash_ref = self.m.declare_func_in_func(hl_hash_id, &mut bcx.func);
-        for (str, locs) in &self.idxs.hash_locations {
-            let gv = self.m.declare_data_in_func(self.idxs.ustr[str], bcx.func);
-            let str_val = bcx.ins().global_value(types::I64, gv);
-            let inst = bcx.ins().call(hl_hash_ref, &[str_val]);
-            let hash = bcx.inst_results(inst)[0];
-            for (d, offset) in locs {
-                let gv = self.m.declare_data_in_func(*d, bcx.func);
-                let loc = bcx.ins().global_value(types::I64, gv);
-                bcx.ins()
-                    .store(MemFlags::trusted(), hash, loc, *offset as i32);
             }
         }
 

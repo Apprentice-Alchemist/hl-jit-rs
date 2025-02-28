@@ -292,6 +292,13 @@ impl HLType {
         }
     }
 
+    pub fn type_enum(&self) -> Option<&TypeEnum> {
+        match self {
+            Self::Enum(e) => Some(e),
+            _ => None,
+        }
+    }
+
     pub fn is_void(&self) -> bool {
         matches!(self, Self::Void)
     }
