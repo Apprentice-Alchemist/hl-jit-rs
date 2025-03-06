@@ -86,6 +86,7 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
         &[types::I64],
     ),
     ("hl_alloc_enum", &[types::I64, types::I32], &[types::I64]),
+    ("hl_dyn_call_obj", &[types::I64, types::I64, types::I32, types::I64, types::I64], &[types::I64]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {

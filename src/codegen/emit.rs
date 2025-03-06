@@ -2,7 +2,7 @@ use std::alloc::Layout;
 use std::ffi::c_int;
 use std::{collections::BTreeMap, mem::offset_of};
 
-use cranelift::codegen::ir::{BlockCall, Inst, SourceLoc, ValueListPool};
+use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, ValueListPool};
 use cranelift::frontend::Switch;
 use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
@@ -521,7 +521,103 @@ impl<'a> EmitCtx<'a> {
                             self.store_reg(dst, self.builder.inst_results(i)[0]);
                         }
                     }
-                    HLType::Virtual(virt) => self.trap(op),
+                    HLType::Virtual(virt) => {
+                        let (field_name, field_ty) = virt.fields[fid.0 as usize];
+                        let virt_val = self.load_reg(&args[0]);
+
+                        let fun_ptr = self.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            virt_val,
+                            size_of::<vvirtual>() as i32
+                                + (fid.0 as usize * size_of::<usize>()) as i32,
+                        );
+
+                        let next_block = self.next_block();
+                        self.emit_brif(
+                            fun_ptr,
+                            |this| {
+                                let mut sig = this.m.make_signature();
+                                sig.params.push(AbiParam::new(types::I64));
+                                super::fill_signature(
+                                    this.code,
+                                    &mut sig,
+                                    &args[1..]
+                                        .iter()
+                                        .map(|reg| this.fun[*reg])
+                                        .collect::<Vec<TypeIdx>>(),
+                                    self.fun[*dst],
+                                );
+                                let mut vargs: Vec<Value> =
+                                    args.iter().map(|r| this.load_reg(r)).collect();
+                                let obj_val = this.ins().load(
+                                    types::I64,
+                                    MemFlags::new(),
+                                    virt_val,
+                                    offset_of!(vvirtual, value) as i32,
+                                );
+                                vargs.insert(0, obj_val);
+                                let sig_ref = this.import_signature(sig);
+                                let i = this.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                                if !this.reg_type(dst).is_void() {
+                                    this.store_reg(dst, this.builder.inst_results(i)[0]);
+                                }
+                            },
+                            |this| {
+                                let pointer_bytes = this.m.isa().pointer_bytes() as u32;
+                                let stack_slot = this.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    pointer_bytes * args.len() as u32,
+                                    4,
+                                ));
+                                let obj_val = this.ins().load(
+                                    types::I64,
+                                    MemFlags::new(),
+                                    virt_val,
+                                    offset_of!(vvirtual, value) as i32,
+                                );
+                                // this.ins().stack_store(obj_val, stack_slot, 0);
+                                for (pos, reg) in args[1..].iter().enumerate() {
+                                    if this.reg_type(reg).is_ptr() {
+                                        let val = this.load_reg(reg);
+                                        this.ins().stack_store(
+                                            val,
+                                            stack_slot,
+                                            pointer_bytes as i32 * (pos + 1) as i32,
+                                        );
+                                    } else {
+                                        let val = this.reg_addr(reg);
+                                        this.ins().stack_store(
+                                            val,
+                                            stack_slot,
+                                            pointer_bytes as i32 * (pos) as i32,
+                                        );
+                                    }
+                                }
+                                let f_ref = this.native_fun("hl_dyn_call_obj");
+
+                                let ft = this.type_val(field_ty);
+                                let hash_val = this.hash(&field_name);
+                                let args = this.ins().stack_addr(types::I64, stack_slot, 1);
+                                let dst_type = this.reg_type(dst).clone();
+                                let ret = match &dst_type {
+                                    HLType::Void => this.ins().iconst(types::I64, 0),
+                                    a if a.is_ptr() => this.ins().iconst(types::I64, 0),
+                                    _ => {
+                                        todo!()
+                                    }
+                                };
+                                let inst = this.ins().call(f_ref, &[obj_val, ft, hash_val, args, ret]);
+                                let ret_val = this.inst_results(inst)[0];
+                                if dst_type.is_ptr() {
+                                    this.store_reg(dst, ret_val);
+                                } else if(!matches!(dst_type, HLType::Void)) {
+                                    todo!()
+                                }
+                            },
+                            next_block,
+                        );
+                    }
                     _ => unimplemented!("OCallMethod only works with HObj or HVirt"),
                 },
                 OpCode::CallThis { dst, fid, args } => self.trap(op),
@@ -981,14 +1077,14 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Throw(reg) => {
                     let val = self.load_reg(reg);
-                    let id = self.idxs.native_calls["hl_rethrow"];
+                    let id = self.idxs.native_calls["hl_throw"];
                     let f = self.m.declare_func_in_func(id, self.builder.func);
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                 }
                 OpCode::Rethrow(reg) => {
                     let val = self.load_reg(reg);
-                    let id = self.idxs.native_calls["hl_throw"];
+                    let id = self.idxs.native_calls["hl_rethrow"];
                     let f = self.m.declare_func_in_func(id, self.builder.func);
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
@@ -1289,16 +1385,7 @@ impl<'a> EmitCtx<'a> {
 
     fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
         let obj_val = self.load_reg(obj);
-        let hash_ref = self
-            .m
-            .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
-        let field_name_data_id = self.idxs.ustr[&field_name];
-        let field_name_global_value = self
-            .m
-            .declare_data_in_func(field_name_data_id, self.builder.func);
-        let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
-        let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
-        let hashed_field = self.builder.inst_results(hash_inst)[0];
+        let field_hash = self.hash(&field_name);
 
         let dyn_get_name = match &self.code[self.fun[*dst]] {
             HLType::Float32 => "hl_dyn_getf",
@@ -1308,40 +1395,56 @@ impl<'a> EmitCtx<'a> {
             _ => "hl_dyn_getp",
         };
 
-        let dyn_get_ref = self
-            .m
-            .declare_func_in_func(self.idxs.native_calls[dyn_get_name], self.builder.func);
+        let dyn_get_ref = self.native_fun(dyn_get_name);
 
         let inst = match &self.code[self.fun[*dst]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => {
-                self.ins().call(dyn_get_ref, &[obj_val, hashed_field])
+                self.ins().call(dyn_get_ref, &[obj_val, field_hash])
             }
             _ => {
-                let dst_ty = self
-                    .m
-                    .declare_data_in_func(self.idxs.types[&self.fun[*dst]], self.builder.func);
-                let dst_ty_val = self.ins().global_value(types::I64, dst_ty);
+                let dst_ty_val = self.reg_type_val(*dst);
                 self.ins()
-                    .call(dyn_get_ref, &[obj_val, hashed_field, dst_ty_val])
+                    .call(dyn_get_ref, &[obj_val, field_hash, dst_ty_val])
             }
         };
         let dst_val = self.inst_results(inst)[0];
         self.store_reg(dst, dst_val);
     }
 
-    fn emit_dyn_set(&mut self, obj: &Reg, field_name: UStrIdx, val: &Reg) {
-        let obj_val = self.load_reg(obj);
-        let val_val = self.load_reg(val);
-        let hash_ref = self
-            .m
-            .declare_func_in_func(self.idxs.native_calls["hl_hash"], self.builder.func);
+    fn native_fun(&mut self, name: &str) -> FuncRef {
+        self.m
+            .declare_func_in_func(self.idxs.native_calls[name], self.builder.func)
+    }
+
+    fn hash(&mut self, field_name: &UStrIdx) -> Value {
         let field_name_data_id = self.idxs.ustr[&field_name];
         let field_name_global_value = self
             .m
             .declare_data_in_func(field_name_data_id, self.builder.func);
         let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
+        let hash_ref = self.native_fun("hl_hash");
         let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
-        let hashed_field = self.builder.inst_results(hash_inst)[0];
+        self.builder.inst_results(hash_inst)[0]
+    }
+
+    fn type_val(&mut self, ty: TypeIdx) -> Value {
+        let gv = self
+            .m
+            .declare_data_in_func(self.idxs.types[&ty], self.builder.func);
+        self.ins().global_value(types::I64, gv)
+    }
+
+    fn reg_type_val(&mut self, r: Reg) -> Value {
+        let gv = self
+            .m
+            .declare_data_in_func(self.idxs.types[&self.fun[r]], self.builder.func);
+        self.ins().global_value(types::I64, gv)
+    }
+
+    fn emit_dyn_set(&mut self, obj: &Reg, field_name: UStrIdx, val: &Reg) {
+        let obj_val = self.load_reg(obj);
+        let val_val = self.load_reg(val);
+        let field_hash = self.hash(&field_name);
 
         let dyn_set_name = match &self.code[self.fun[*val]] {
             HLType::Float32 => "hl_dyn_setf",
@@ -1350,21 +1453,16 @@ impl<'a> EmitCtx<'a> {
             HLType::Boolean | HLType::UInt8 | HLType::UInt16 | HLType::Int32 => "hl_dyn_seti",
             _ => "hl_dyn_setp",
         };
-        let dyn_set_ref = self
-            .m
-            .declare_func_in_func(self.idxs.native_calls[dyn_set_name], self.builder.func);
+        let dyn_set_ref = self.native_fun(dyn_set_name);
 
         match &self.code[self.fun[*val]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => self
                 .ins()
-                .call(dyn_set_ref, &[obj_val, hashed_field, val_val]),
+                .call(dyn_set_ref, &[obj_val, field_hash, val_val]),
             _ => {
-                let gv = self
-                    .m
-                    .declare_data_in_func(self.idxs.types[&self.fun[*val]], self.builder.func);
-                let val_ty = self.ins().global_value(types::I64, gv);
+                let val_ty = self.reg_type_val(*val);
                 self.ins()
-                    .call(dyn_set_ref, &[obj_val, hashed_field, val_ty, val_val])
+                    .call(dyn_set_ref, &[obj_val, field_hash, val_ty, val_val])
             }
         };
     }
