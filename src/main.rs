@@ -1,7 +1,8 @@
 #![allow(unused, dead_code)]
 use code::Reader;
 use cranelift::jit::{JITBuilder, JITModule};
-use std::error::Error;
+use sys::{hl_type, vdynamic};
+use std::{error::Error, ffi::c_void};
 
 mod code;
 mod codegen;
@@ -28,8 +29,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // let bytes = product.emit()?;
     // std::fs::write("foo.o", bytes);
     let (m, entrypoint) = crate::jit::compile_module(code);
+    unsafe extern "C" {
+        unsafe fn ffi_static_call(fun: *mut c_void, ft: *mut hl_type, args: *mut *mut c_void, out: *mut vdynamic) -> *mut c_void;
+        unsafe fn ffi_get_wrapper(ty: *mut hl_type) -> *mut c_void;
+    }
     unsafe {
         sys::hl_global_init();
+        sys::hl_setup_callbacks(ffi_static_call as *mut c_void, ffi_get_wrapper as *mut c_void);
         sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());
         let entrypoint: extern "C" fn() =
             core::mem::transmute(m.get_finalized_function(entrypoint));

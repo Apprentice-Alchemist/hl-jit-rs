@@ -14,7 +14,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+    
+    cc::Build::new()
+    .file("src/ffi_callbacks.c")
+    .compile("ffi_callbacks");
     println!("cargo::rustc-link-lib=hl");
+    println!("cargo::rustc-link-lib=ffi");
     println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/local/lib");
     Ok(())
 }
