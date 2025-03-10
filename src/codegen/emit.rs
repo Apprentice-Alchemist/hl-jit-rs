@@ -1528,7 +1528,7 @@ impl<'a> EmitCtx<'a> {
                         super::fill_signature(
                             this.code,
                             &mut sig,
-                            &args[1..]
+                            &args
                                 .iter()
                                 .map(|reg| this.fun[*reg])
                                 .collect::<Vec<TypeIdx>>(),
@@ -1562,7 +1562,7 @@ impl<'a> EmitCtx<'a> {
                             virt_val,
                             offset_of!(vvirtual, value) as i32,
                         );
-                        for (pos, reg) in args[1..].iter().enumerate() {
+                        for (pos, reg) in args.iter().enumerate() {
                             if this.reg_type(reg).is_ptr() {
                                 let val = this.load_reg(reg);
                                 this.ins().stack_store(
