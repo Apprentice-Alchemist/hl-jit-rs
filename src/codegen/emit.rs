@@ -529,7 +529,7 @@ impl<'a> EmitCtx<'a> {
                                 let val_addr = self.ins().stack_addr(types::I64, stack_slot, 0);
                                 assert!(
                                     matches!(self.code[TypeIdx(9)], HLType::Dynamic),
-                                    "HVoid does not have index 9"
+                                    "HDynamic does not have index 9"
                                 );
                                 self.emit_dyn_cast(dst, TypeIdx(9), val_addr);
                             }
