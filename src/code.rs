@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use crate::opcode::{OpCode, Reg};
+use crate::opcode::{Idx, OpCode, Reg};
 
 pub struct Reader(BufReader<File>);
 impl Reader {
@@ -169,7 +169,7 @@ pub struct TypeObj {
     pub super_: Option<TypeIdx>,
     pub global: Option<GlobalIdx>,
     pub fields: Vec<(UStrIdx, TypeIdx)>,
-    pub protos: Vec<(UStrIdx, usize, isize)>,
+    pub protos: Vec<(UStrIdx, FunIdx, Idx)>,
     pub bindings: Vec<(usize, usize)>,
 }
 
@@ -303,6 +303,19 @@ impl HLType {
         matches!(self, Self::Void)
     }
 
+    pub fn is_dynamic(&self) -> bool {
+        match self {
+            Self::Dynamic
+            | Self::Function(_)
+            | Self::Object(_)
+            | Self::Array
+            | Self::Virtual(_)
+            | Self::Dynobj
+            | Self::Enum(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_ptr(&self) -> bool {
         match self {
             Self::Bytes
@@ -361,8 +374,8 @@ fn read_obj(r: &mut Reader) -> io::Result<TypeObj> {
 
     let protos = r.vec(nproto, |r| {
         let name = r.r()?;
-        let fidx = r.udx()?;
-        let pidx = r.idx()?;
+        let fidx = r.r()?;
+        let pidx = r.r()?;
         Ok((name, fidx, pidx))
     })?;
 

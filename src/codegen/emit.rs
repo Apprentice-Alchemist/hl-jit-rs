@@ -498,21 +498,41 @@ impl<'a> EmitCtx<'a> {
                     self.emit_method_call(dst, *fid, this, args)
                 }
                 OpCode::CallClosure { dst, closure, args } => {
-                    // self.ins().debugtrap();
                     match self.reg_type(closure) {
                         HLType::Dynamic => {
-                            // let slot_size = self.m.isa().pointer_bytes() as u32 * args.len() as u32;
-                            // let args_slot = self.create_sized_stack_slot(StackSlotData::new(
-                            //     StackSlotKind::ExplicitSlot,
-                            //     slot_size,
-                            //     3
-                            // ));
-                            // let slot_addr = self.ins().stack_addr(types::I64, args_slot, )
-                            //	vdynamic *args[] = {args};
-                            //  vdynamic *ret = hl_dyn_call(closure,args,nargs);
-                            //  dst = hl_dyncast(ret,t_dynamic,t_dst);
-                            // }
-                            self.trap(op);
+                            let slot_size = self.m.isa().pointer_bytes() as u32 * args.len() as u32;
+                            let args_slot = self.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                slot_size,
+                                3,
+                            ));
+                            for (pos, arg) in args.iter().enumerate() {
+                                assert!(self.reg_type(arg).is_dynamic());
+                                let val = self.load_reg(arg);
+                                self.ins().stack_store(val, args_slot, pos as i32 * 8);
+                            }
+                            let dyn_call_ref = self.native_fun("hl_dyn_call");
+                            let closure_val = self.load_reg(closure);
+                            let args_val = self.ins().stack_addr(types::I64, args_slot, 0);
+                            let args_count_val = self.ins().iconst(types::I32, args.len() as i64);
+                            let inst = self
+                                .ins()
+                                .call(dyn_call_ref, &[closure_val, args_val, args_count_val]);
+                            if !self.reg_type(dst).is_void() {
+                                let stack_slot = self.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    8,
+                                    3,
+                                ));
+                                let result = self.inst_results(inst)[0];
+                                self.ins().stack_store(result, stack_slot, 0);
+                                let val_addr = self.ins().stack_addr(types::I64, stack_slot, 0);
+                                assert!(
+                                    matches!(self.code[TypeIdx(9)], HLType::Dynamic),
+                                    "HVoid does not have index 9"
+                                );
+                                self.emit_dyn_cast(dst, TypeIdx(9), val_addr);
+                            }
                         }
                         _ => {
                             // if( c->hasValue ) c->fun(value,args) else c->fun(args)
@@ -614,7 +634,44 @@ impl<'a> EmitCtx<'a> {
                     let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
-                OpCode::VirtualClosure { dst, obj, idx } => self.trap(op),
+                OpCode::VirtualClosure { dst, obj, idx } => {
+                    let mut ot = self.reg_type(obj);
+                    let ty = loop {
+                        let proto = ot.type_obj().unwrap();
+                        let Some(val) =
+                            proto.protos.iter().find(|(_, _, pindex)| pindex.0 == idx.0)
+                        else {
+                            ot = &self.code[proto.super_.unwrap()];
+                            continue;
+                        };
+                        break self.idxs.fn_type_map[&val.1];
+                    };
+
+                    // obj->$ty->vobj_proto[i]
+                    let obj_val = self.load_reg(obj);
+                    let obj_ty_val = self.ins().load(types::I64, MemFlags::trusted(), obj_val, 0);
+                    let obj_proto_val = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        obj_ty_val,
+                        offset_of!(hl_type, vobj_proto) as i32,
+                    );
+                    let fun_addr = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        obj_proto_val,
+                        8 * idx.0 as i32,
+                    );
+                    let alloc_closure_ref = self.native_fun("hl_alloc_closure_ptr");
+
+                    let ty_val = self.idxs.types[&ty];
+                    let global_value = self.m.declare_data_in_func(ty_val, self.builder.func);
+                    let ty_val = self.ins().global_value(types::I64, global_value);
+                    let inst = self
+                        .ins()
+                        .call(alloc_closure_ref, &[ty_val, fun_addr, obj_val]);
+                    self.store_reg(dst, self.inst_results(inst)[0]);
+                }
                 OpCode::GetGlobal { dst, idx } => {
                     let global_value = self
                         .m
@@ -891,39 +948,9 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::SafeCast { dst, val } => {
-                    let val_val = self.reg_addr(val);
-                    let dst_val = self.load_reg(val);
+                    let val_addr = self.reg_addr(val);
 
-                    let cast_name = match self.reg_type(dst) {
-                        HLType::Float32 => "hl_dyn_castf",
-                        HLType::Float64 => "hl_dyn_castd",
-                        HLType::Int64 => "hl_dyn_casti64",
-                        HLType::Int32 | HLType::UInt16 | HLType::UInt8 => "hl_dyn_casti",
-                        _ => "hl_dyn_castp",
-                    };
-                    let cast_id = self.idxs.native_calls[cast_name];
-                    let cast_ref = self.m.declare_func_in_func(cast_id, self.builder.func);
-                    let inst = match self.reg_type(dst) {
-                        HLType::Float32 | HLType::Float64 | HLType::Int64 => {
-                            let data_id = self.idxs.types[&self.fun[*val]];
-                            let global_value =
-                                self.m.declare_data_in_func(data_id, self.builder.func);
-                            let ty = self.ins().global_value(types::I64, global_value);
-                            self.ins().call(cast_ref, &[val_val, ty])
-                        }
-                        _ => {
-                            let data_id = self.idxs.types[&self.fun[*val]];
-                            let global_value =
-                                self.m.declare_data_in_func(data_id, self.builder.func);
-                            let src_ty = self.ins().global_value(types::I64, global_value);
-                            let data_id = self.idxs.types[&self.fun[*dst]];
-                            let global_value =
-                                self.m.declare_data_in_func(data_id, self.builder.func);
-                            let dst_ty = self.ins().global_value(types::I64, global_value);
-                            self.ins().call(cast_ref, &[val_val, src_ty, dst_ty])
-                        }
-                    };
-                    self.store_reg(dst, self.inst_results(inst)[0]);
+                    self.emit_dyn_cast(dst, self.fun[*val], val_addr);
                 }
                 OpCode::UnsafeCast { dst, val } => {
                     let val = self.load_reg(val);
@@ -1266,6 +1293,36 @@ impl<'a> EmitCtx<'a> {
         self.seal_all_blocks();
     }
 
+    fn emit_dyn_cast(&mut self, dst: &Reg, val_ty: TypeIdx, val_addr: Value) {
+        let cast_name = match self.reg_type(dst) {
+            HLType::Float32 => "hl_dyn_castf",
+            HLType::Float64 => "hl_dyn_castd",
+            HLType::Int64 => "hl_dyn_casti64",
+            HLType::Int32 | HLType::UInt16 | HLType::UInt8 => "hl_dyn_casti",
+            _ => "hl_dyn_castp",
+        };
+        let cast_id = self.idxs.native_calls[cast_name];
+        let cast_ref = self.m.declare_func_in_func(cast_id, self.builder.func);
+        let inst = match self.reg_type(dst) {
+            HLType::Float32 | HLType::Float64 | HLType::Int64 => {
+                let data_id = self.idxs.types[&val_ty];
+                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
+                let ty = self.ins().global_value(types::I64, global_value);
+                self.ins().call(cast_ref, &[val_addr, ty])
+            }
+            _ => {
+                let data_id = self.idxs.types[&val_ty];
+                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
+                let src_ty = self.ins().global_value(types::I64, global_value);
+                let data_id = self.idxs.types[&self.fun[*dst]];
+                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
+                let dst_ty = self.ins().global_value(types::I64, global_value);
+                self.ins().call(cast_ref, &[val_addr, src_ty, dst_ty])
+            }
+        };
+        self.store_reg(dst, self.inst_results(inst)[0]);
+    }
+
     fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
         let obj_val = self.load_reg(obj);
         let field_hash = self.hash(&field_name);
@@ -1546,11 +1603,9 @@ impl<'a> EmitCtx<'a> {
                             this.store_reg(dst, ret_val);
                         } else if let Some(slot) = slot {
                             let ty = this.reg_type(dst).cranelift_type();
-                            let val = this.ins().stack_load(
-                                ty,
-                                slot,
-                                offset_of!(vdynamic, v) as i32,
-                            );
+                            let val =
+                                this.ins()
+                                    .stack_load(ty, slot, offset_of!(vdynamic, v) as i32);
                             this.store_reg(dst, val);
                         }
                     },

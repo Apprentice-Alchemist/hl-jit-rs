@@ -7,11 +7,10 @@ use cranelift::{
 };
 
 use crate::{
-    code::{Code, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx},
-    sys::{
+    code::{Code, FunIdx, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx}, opcode::Idx, sys::{
         hl_enum_construct, hl_module_context, hl_obj_field, hl_obj_proto, hl_type, hl_type_enum,
         hl_type_fun, hl_type_kind, hl_type_obj, hl_type_virtual,
-    },
+    }
 };
 
 use super::Indexes;
@@ -213,7 +212,7 @@ fn build_field_arr(
 fn build_proto_arr(
     m: &mut dyn Module,
     idxs: &mut Indexes,
-    fields: &[(UStrIdx, usize, isize)],
+    fields: &[(UStrIdx, FunIdx, Idx)],
 ) -> Result<DataId, ModuleError> {
     let id = m.declare_anonymous_data(true, false)?;
     let align = align_of::<hl_obj_proto>();
@@ -223,8 +222,8 @@ fn build_proto_arr(
         let mut buf = vec![0u8; size_of::<hl_obj_proto>() * fields.len()];
         for (pos, chunk) in buf.chunks_mut(size_of::<hl_obj_proto>()).enumerate() {
             let (_, findex, pindex) = fields[pos];
-            let findex: c_int = findex as c_int;
-            let pindex: c_int = pindex as c_int;
+            let findex: c_int = findex.0 as c_int;
+            let pindex: c_int = pindex.0 as c_int;
             chunk[offset_of!(hl_obj_proto, findex)
                 ..offset_of!(hl_obj_proto, findex) + size_of::<c_int>()]
                 .copy_from_slice(&findex.to_ne_bytes());
