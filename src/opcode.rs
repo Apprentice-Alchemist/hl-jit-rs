@@ -913,9 +913,3 @@ pub enum OpCode {
         args: [Idx; 3],
     },
 }
-
-impl OpCode {
-    pub(crate) fn discriminant(&self) -> u8 {
-        unsafe { *(self as *const Self as *const u8) }
-    }
-}
