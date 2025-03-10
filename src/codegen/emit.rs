@@ -489,142 +489,25 @@ impl<'a> EmitCtx<'a> {
                     }
                 }
 
-                OpCode::CallMethod { dst, fid, args } => match self.reg_type(&args[0]) {
-                    HLType::Object(obj) => {
-                        let vargs: Vec<Value> = args.iter().map(|r| self.load_reg(r)).collect();
-                        let ty_val = self.ins().load(types::I64, MemFlags::new(), vargs[0], 0);
-                        let proto_val = self.ins().load(
-                            types::I64,
-                            MemFlags::new(),
-                            ty_val,
-                            offset_of!(hl_type, vobj_proto) as i32,
-                        );
-                        let fun_ptr = self.ins().load(
-                            types::I64,
-                            MemFlags::new(),
-                            proto_val,
-                            (fid.0 as usize * size_of::<*mut u8>()) as i32,
-                        );
-                        let mut sig = self.m.make_signature();
-                        super::fill_signature(
-                            self.code,
-                            &mut sig,
-                            &args
-                                .iter()
-                                .map(|reg| self.fun[*reg])
-                                .collect::<Vec<TypeIdx>>(),
-                            self.fun[*dst],
-                        );
-                        let sig_ref = self.import_signature(sig);
-                        let i = self.ins().call_indirect(sig_ref, fun_ptr, &vargs);
-                        if !self.reg_type(dst).is_void() {
-                            self.store_reg(dst, self.builder.inst_results(i)[0]);
-                        }
-                    }
-                    HLType::Virtual(virt) => {
-                        let (field_name, field_ty) = virt.fields[fid.0 as usize];
-                        let virt_val = self.load_reg(&args[0]);
-
-                        let fun_ptr = self.ins().load(
-                            types::I64,
-                            MemFlags::new(),
-                            virt_val,
-                            size_of::<vvirtual>() as i32
-                                + (fid.0 as usize * size_of::<usize>()) as i32,
-                        );
-
-                        let next_block = self.next_block();
-                        self.emit_brif(
-                            fun_ptr,
-                            |this| {
-                                let mut sig = this.m.make_signature();
-                                sig.params.push(AbiParam::new(types::I64));
-                                super::fill_signature(
-                                    this.code,
-                                    &mut sig,
-                                    &args[1..]
-                                        .iter()
-                                        .map(|reg| this.fun[*reg])
-                                        .collect::<Vec<TypeIdx>>(),
-                                    self.fun[*dst],
-                                );
-                                let mut vargs: Vec<Value> =
-                                    args.iter().map(|r| this.load_reg(r)).collect();
-                                let obj_val = this.ins().load(
-                                    types::I64,
-                                    MemFlags::new(),
-                                    virt_val,
-                                    offset_of!(vvirtual, value) as i32,
-                                );
-                                vargs.insert(0, obj_val);
-                                let sig_ref = this.import_signature(sig);
-                                let i = this.ins().call_indirect(sig_ref, fun_ptr, &vargs);
-                                if !this.reg_type(dst).is_void() {
-                                    this.store_reg(dst, this.builder.inst_results(i)[0]);
-                                }
-                            },
-                            |this| {
-                                let pointer_bytes = this.m.isa().pointer_bytes() as u32;
-                                let stack_slot = this.create_sized_stack_slot(StackSlotData::new(
-                                    StackSlotKind::ExplicitSlot,
-                                    pointer_bytes * args.len() as u32,
-                                    4,
-                                ));
-                                let obj_val = this.ins().load(
-                                    types::I64,
-                                    MemFlags::new(),
-                                    virt_val,
-                                    offset_of!(vvirtual, value) as i32,
-                                );
-                                // this.ins().stack_store(obj_val, stack_slot, 0);
-                                for (pos, reg) in args[1..].iter().enumerate() {
-                                    if this.reg_type(reg).is_ptr() {
-                                        let val = this.load_reg(reg);
-                                        this.ins().stack_store(
-                                            val,
-                                            stack_slot,
-                                            pointer_bytes as i32 * (pos + 1) as i32,
-                                        );
-                                    } else {
-                                        let val = this.reg_addr(reg);
-                                        this.ins().stack_store(
-                                            val,
-                                            stack_slot,
-                                            pointer_bytes as i32 * (pos) as i32,
-                                        );
-                                    }
-                                }
-                                let f_ref = this.native_fun("hl_dyn_call_obj");
-
-                                let ft = this.type_val(field_ty);
-                                let hash_val = this.hash(&field_name);
-                                let args = this.ins().stack_addr(types::I64, stack_slot, 1);
-                                let dst_type = this.reg_type(dst).clone();
-                                let ret = match &dst_type {
-                                    HLType::Void => this.ins().iconst(types::I64, 0),
-                                    a if a.is_ptr() => this.ins().iconst(types::I64, 0),
-                                    _ => {
-                                        todo!()
-                                    }
-                                };
-                                let inst = this.ins().call(f_ref, &[obj_val, ft, hash_val, args, ret]);
-                                let ret_val = this.inst_results(inst)[0];
-                                if dst_type.is_ptr() {
-                                    this.store_reg(dst, ret_val);
-                                } else if(!matches!(dst_type, HLType::Void)) {
-                                    todo!()
-                                }
-                            },
-                            next_block,
-                        );
-                    }
-                    _ => unimplemented!("OCallMethod only works with HObj or HVirt"),
+                OpCode::CallMethod { dst, fid, args } => match args[..] {
+                    [this, ref args @ ..] => self.emit_method_call(dst, *fid, this, args),
+                    _ => panic!("invalid OCallMethod, not enough args"),
                 },
-                OpCode::CallThis { dst, fid, args } => self.trap(op),
+                OpCode::CallThis { dst, fid, args } => {
+                    let this = Reg(0);
+                    self.emit_method_call(dst, *fid, this, args)
+                }
                 OpCode::CallClosure { dst, closure, args } => {
                     // self.ins().debugtrap();
                     match self.reg_type(closure) {
                         HLType::Dynamic => {
+                            // let slot_size = self.m.isa().pointer_bytes() as u32 * args.len() as u32;
+                            // let args_slot = self.create_sized_stack_slot(StackSlotData::new(
+                            //     StackSlotKind::ExplicitSlot,
+                            //     slot_size,
+                            //     3
+                            // ));
+                            // let slot_addr = self.ins().stack_addr(types::I64, args_slot, )
                             //	vdynamic *args[] = {args};
                             //  vdynamic *ret = hl_dyn_call(closure,args,nargs);
                             //  dst = hl_dyncast(ret,t_dynamic,t_dst);
@@ -1530,6 +1413,152 @@ impl<'a> EmitCtx<'a> {
         self.ins()
             .brif(val, block_then_label, &[], block_else_label, &[]);
         self.switch_to_block(block_else_label);
+    }
+
+    fn emit_method_call(&mut self, dst: &Reg, fid: Idx, this_arg: Reg, args: &[Reg]) {
+        match self.reg_type(&this_arg) {
+            HLType::Object(obj) => {
+                let mut vargs: Vec<Value> = Vec::with_capacity(args.len() + 1);
+                vargs.push(self.load_reg(&this_arg));
+                vargs.extend(args.iter().map(|r| self.load_reg(r)));
+                let ty_val = self.ins().load(types::I64, MemFlags::new(), vargs[0], 0);
+                let proto_val = self.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    ty_val,
+                    offset_of!(hl_type, vobj_proto) as i32,
+                );
+                let fun_ptr = self.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    proto_val,
+                    (fid.0 as usize * size_of::<*mut u8>()) as i32,
+                );
+                let mut sig = self.m.make_signature();
+                sig.params.push(AbiParam::new(types::I64));
+                super::fill_signature(
+                    self.code,
+                    &mut sig,
+                    &args
+                        .iter()
+                        .map(|reg| self.fun[*reg])
+                        .collect::<Vec<TypeIdx>>(),
+                    self.fun[*dst],
+                );
+                let sig_ref = self.import_signature(sig);
+                let i = self.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                if !self.reg_type(dst).is_void() {
+                    self.store_reg(dst, self.builder.inst_results(i)[0]);
+                }
+            }
+            HLType::Virtual(virt) => {
+                let (field_name, field_ty) = virt.fields[fid.0 as usize];
+                let virt_val = self.load_reg(&this_arg);
+
+                let fun_ptr = self.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    virt_val,
+                    size_of::<vvirtual>() as i32 + (fid.0 as usize * size_of::<usize>()) as i32,
+                );
+
+                let next_block = self.next_block();
+                self.emit_brif(
+                    fun_ptr,
+                    |this| {
+                        let mut sig = this.m.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        super::fill_signature(
+                            this.code,
+                            &mut sig,
+                            &args[1..]
+                                .iter()
+                                .map(|reg| this.fun[*reg])
+                                .collect::<Vec<TypeIdx>>(),
+                            self.fun[*dst],
+                        );
+                        let mut vargs: Vec<Value> = Vec::with_capacity(args.len() + 1);
+                        let obj_val = this.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            virt_val,
+                            offset_of!(vvirtual, value) as i32,
+                        );
+                        vargs.push(obj_val);
+                        vargs.extend(args.iter().map(|r| this.load_reg(r)));
+                        let sig_ref = this.import_signature(sig);
+                        let i = this.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                        if !this.reg_type(dst).is_void() {
+                            this.store_reg(dst, this.builder.inst_results(i)[0]);
+                        }
+                    },
+                    |this| {
+                        let pointer_bytes = this.m.isa().pointer_bytes() as u32;
+                        let stack_slot = this.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            pointer_bytes * args.len() as u32,
+                            4,
+                        ));
+                        let obj_val = this.ins().load(
+                            types::I64,
+                            MemFlags::new(),
+                            virt_val,
+                            offset_of!(vvirtual, value) as i32,
+                        );
+                        for (pos, reg) in args[1..].iter().enumerate() {
+                            if this.reg_type(reg).is_ptr() {
+                                let val = this.load_reg(reg);
+                                this.ins().stack_store(
+                                    val,
+                                    stack_slot,
+                                    pointer_bytes as i32 * (pos) as i32,
+                                );
+                            } else {
+                                let val = this.reg_addr(reg);
+                                this.ins().stack_store(
+                                    val,
+                                    stack_slot,
+                                    pointer_bytes as i32 * (pos) as i32,
+                                );
+                            }
+                        }
+                        let f_ref = this.native_fun("hl_dyn_call_obj");
+
+                        let ft = this.type_val(field_ty);
+                        let hash_val = this.hash(&field_name);
+                        let args = this.ins().stack_addr(types::I64, stack_slot, 1);
+                        let dst_type = this.reg_type(dst).clone();
+                        let (ret, slot) = match &dst_type {
+                            HLType::Void => (this.ins().iconst(types::I64, 0), None),
+                            a if a.is_ptr() => (this.ins().iconst(types::I64, 0), None),
+                            _ => {
+                                let slot = this.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    size_of::<vdynamic>() as u32,
+                                    3,
+                                ));
+                                (this.ins().stack_addr(types::I64, slot, 0), Some(slot))
+                            }
+                        };
+                        let inst = this.ins().call(f_ref, &[obj_val, ft, hash_val, args, ret]);
+                        let ret_val = this.inst_results(inst)[0];
+                        if dst_type.is_ptr() {
+                            this.store_reg(dst, ret_val);
+                        } else if let Some(slot) = slot {
+                            let ty = this.reg_type(dst).cranelift_type();
+                            let val = this.ins().stack_load(
+                                ty,
+                                slot,
+                                offset_of!(vdynamic, v) as i32,
+                            );
+                            this.store_reg(dst, val);
+                        }
+                    },
+                    next_block,
+                );
+            }
+            _ => panic!("OCallMethod only works with HObj or HVirt"),
+        }
     }
 
     pub fn finish(self) {
