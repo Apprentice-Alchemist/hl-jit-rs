@@ -2,6 +2,7 @@
 name = "hl-jit"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0 WITH LLVM-exception"
 
 [dependencies]
 clap = { version = "4.5.31", features = ["derive"] }

@@ -3,4 +3,7 @@
 /out
 Main.hx
 *.hl
+*.o
+/.vscode
 compile_commands.json
+*.hxml
