@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, mem::offset_of};
 
 use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, UserFuncName, ValueListPool};
 use cranelift::frontend::Switch;
+use cranelift::module::DataDescription;
 use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
 
@@ -614,16 +615,22 @@ impl<'a> EmitCtx<'a> {
                     }
                 }
                 OpCode::StaticClosure { dst, fid } => {
-                    // TODO: avoid allocation
-                    let alloc_ref = self.native_fun("hl_alloc_closure_ptr");
-                    let ty_id = self.idxs.fn_type_map[fid];
-                    let ty_val = self.type_val(ty_id);
                     let func_id = self.idxs.fn_map[fid];
-                    let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
-                    let func_addr = self.ins().func_addr(types::I64, func_ref);
-                    let obj_val = self.ins().iconst(types::I64, 0);
-                    let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
-                    self.store_reg(dst, self.inst_results(inst)[0]);
+
+                    let id = self.m.declare_anonymous_data(false, false).unwrap();
+                    let mut data = DataDescription::new();
+                    data.define_zeroinit(size_of::<crate::sys::vclosure>());
+
+                    let ty_id = self.m.declare_data_in_data(self.idxs.types[self.idxs.fn_type_map[&fid].0], &mut data);
+                    data.write_data_addr(0  , ty_id, 0);
+                    let fn_id = self.m.declare_func_in_data(func_id, &mut data);
+                    data.write_function_addr(8, fn_id);
+
+                    self.m.define_data(id, &data).unwrap();
+
+                    let gv = self.m.declare_data_in_func(id, self.builder.func);
+                    let val = self.ins().global_value(types::I64, gv);
+                    self.store_reg(dst, val);
                 }
                 OpCode::InstanceClosure { dst, idx, obj } => {
                     let alloc_ref = self.native_fun("hl_alloc_closure_ptr");
