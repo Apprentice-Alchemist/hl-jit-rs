@@ -2,7 +2,7 @@ use std::alloc::Layout;
 use std::ffi::c_int;
 use std::{collections::BTreeMap, mem::offset_of};
 
-use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, ValueListPool};
+use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, UserFuncName, ValueListPool};
 use cranelift::frontend::Switch;
 use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
@@ -78,6 +78,7 @@ impl<'a> EmitCtx<'a> {
             .signature
             .clone();
         ctx.func.signature = function_signature.clone();
+        ctx.func.name = UserFuncName::testcase(format!("hl_fun@{}", fun.idx.0));
 
         let mut regs = BTreeMap::new();
 
@@ -293,7 +294,7 @@ impl<'a> EmitCtx<'a> {
                         todo!("handle OBytes for version >= 5")
                     } else {
                         self.m.declare_data_in_func(
-                            self.idxs.ustr[&UStrIdx(idx.0 as usize)],
+                            self.idxs.ustr[idx.0 as usize],
                             self.builder.func,
                         )
                     };
@@ -303,7 +304,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::String { dst, idx } => {
                     let gval = self
                         .m
-                        .declare_data_in_func(self.idxs.ustr[idx], self.builder.func);
+                        .declare_data_in_func(self.idxs.ustr[idx.0], self.builder.func);
                     let val = self.ins().global_value(types::I64, gval);
                     self.store_reg(dst, val);
                 }
@@ -373,11 +374,10 @@ impl<'a> EmitCtx<'a> {
                     if self.reg_type(dst).is_float() {
                         let name = match self.reg_type(dst) {
                             HLType::Float32 => "fmodf",
-                            HLType::Float32 => "fmod",
-                            _ => unreachable!(),
+                            HLType::Float64 => "fmod",
+                            t => unreachable!("not a float: {:?}", t),
                         };
-                        let id = self.idxs.native_calls[name];
-                        let f = self.m.declare_func_in_func(id, self.builder.func);
+                        let f = self.native_fun(name);
                         let a = self.load_reg(a);
                         let b = self.load_reg(b);
                         let i = self.ins().call(f, &[a, b]);
@@ -605,13 +605,9 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::StaticClosure { dst, fid } => {
                     // TODO: avoid allocation
-                    let alloc_id = self.idxs.native_calls["hl_alloc_closure_ptr"];
-                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let alloc_ref = self.native_fun("hl_alloc_closure_ptr");
                     let ty_id = self.idxs.fn_type_map[fid];
-                    let ty = self
-                        .m
-                        .declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, ty);
+                    let ty_val = self.type_val(ty_id);
                     let func_id = self.idxs.fn_map[fid];
                     let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
                     let func_addr = self.ins().func_addr(types::I64, func_ref);
@@ -620,13 +616,9 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
                 OpCode::InstanceClosure { dst, idx, obj } => {
-                    let alloc_id = self.idxs.native_calls["hl_alloc_closure_ptr"];
-                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
+                    let alloc_ref = self.native_fun("hl_alloc_closure_ptr");
                     let ty_id = self.idxs.fn_type_map[idx];
-                    let ty = self
-                        .m
-                        .declare_data_in_func(self.idxs.types[&ty_id], self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, ty);
+                    let ty_val = self.type_val(ty_id);
                     let func_id = self.idxs.fn_map[idx];
                     let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
                     let func_addr = self.ins().func_addr(types::I64, func_ref);
@@ -664,9 +656,7 @@ impl<'a> EmitCtx<'a> {
                     );
                     let alloc_closure_ref = self.native_fun("hl_alloc_closure_ptr");
 
-                    let ty_val = self.idxs.types[&ty];
-                    let global_value = self.m.declare_data_in_func(ty_val, self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, global_value);
+                    let ty_val = self.type_val(ty);
                     let inst = self
                         .ins()
                         .call(alloc_closure_ref, &[ty_val, fun_addr, obj_val]);
@@ -864,8 +854,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::ToDyn { dst, val } => match self.reg_type(val) {
                     HLType::Boolean => {
-                        let func_id = self.idxs.native_calls["hl_alloc_dynbool"];
-                        let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                        let func_ref = self.native_fun("hl_alloc_dynbool");
                         let val = self.load_reg(val);
                         let inst = self.ins().call(func_ref, &[val]);
                         self.store_reg(dst, self.inst_results(inst)[0]);
@@ -874,13 +863,8 @@ impl<'a> EmitCtx<'a> {
                         let is_ptr = ty.is_ptr();
                         let val_val = self.load_reg(val);
                         let emit_alloc_dynamic = |ecx: &mut EmitCtx<'_>| {
-                            let func_id = ecx.idxs.native_calls["hl_alloc_dynamic"];
-                            let func_ref = ecx.m.declare_func_in_func(func_id, ecx.builder.func);
-                            let gv = ecx.m.declare_data_in_func(
-                                ecx.idxs.types[&ecx.fun[*val]],
-                                ecx.builder.func,
-                            );
-                            let clir_ty = ecx.ins().global_value(types::I64, gv);
+                            let func_ref = ecx.native_fun("hl_alloc_dynamic");
+                            let clir_ty = ecx.reg_type_val(*val);
                             let inst = ecx.ins().call(func_ref, &[clir_ty]);
                             let dyn_val = ecx.inst_results(inst)[0];
                             ecx.ins().store(
@@ -932,10 +916,16 @@ impl<'a> EmitCtx<'a> {
                     let dst_ty = self.reg_type(dst).cranelift_type();
                     let val = self.load_reg(val);
                     let val = if src_ty.is_int() && dst_ty.is_int() {
-                        if src_ty.wider_or_equal(dst_ty) {
-                            self.ins().ireduce(dst_ty, val)
-                        } else {
-                            self.ins().sextend(dst_ty, val)
+                        match src_ty.bits().cmp(&dst_ty.bits()) {
+                            std::cmp::Ordering::Greater => {
+                                self.ins().ireduce(dst_ty, val)
+                            }
+                            std::cmp::Ordering::Less => {
+                                self.ins().sextend(dst_ty, val)
+                            }
+                            std::cmp::Ordering::Equal => {
+                                val
+                            }
                         }
                     } else {
                         if dst_ty.bytes() < 4 {
@@ -959,12 +949,9 @@ impl<'a> EmitCtx<'a> {
                 OpCode::ToVirtual { dst, val } => {
                     let val = self.load_reg(val);
 
-                    let ty_id = self.idxs.types[&self.fun[*dst]];
-                    let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let ty_val = self.reg_type_val(*dst);
 
-                    let id = self.idxs.native_calls["hl_to_virtual"];
-                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    let f = self.native_fun("hl_to_virtual");
                     let inst = self.ins().call(f, &[ty_val, val]);
                     self.store_reg(dst, self.builder.inst_results(inst)[0]);
                 }
@@ -987,26 +974,25 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Throw(reg) => {
                     let val = self.load_reg(reg);
-                    let id = self.idxs.native_calls["hl_throw"];
-                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    let f = self.native_fun("hl_throw");
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                 }
                 OpCode::Rethrow(reg) => {
                     let val = self.load_reg(reg);
-                    let id = self.idxs.native_calls["hl_rethrow"];
-                    let f = self.m.declare_func_in_func(id, self.builder.func);
+                    let f = self.native_fun("hl_rethrow");
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                 }
                 OpCode::Switch { val, cases, end } => {
-                    let val = self.load_reg(val);
+                    let val_val = self.load_reg(val);
                     let mut switch = Switch::new();
                     for (val, case) in cases.iter().enumerate() {
                         switch.set_entry(val as u128, self.block_for_offset(case));
                     }
                     let end_block = self.block_for_offset(end);
-                    switch.emit(self, val, end_block);
+                    dbg!((val, end, end_block));
+                    switch.emit(self, val_val, end_block);
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
                 }
@@ -1016,7 +1002,9 @@ impl<'a> EmitCtx<'a> {
                     let null_block = self.create_block();
                     self.ins().brif(val, next_block, &[], null_block, &[]);
                     self.switch_to_block(null_block);
-                    self.ins().trap(TrapCode::unwrap_user(2)); // TODO: hl_null_access
+                    let na = self.native_fun("hl_null_access");
+                    self.ins().call(na, &[]);
+                    self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                     self.switch_to_block(next_block);
                 }
                 OpCode::Trap { dst, jump_off } => {
@@ -1100,34 +1088,19 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::New { dst } => match self.reg_type(dst) {
                     HLType::Object(_) | HLType::Struct(_) => {
-                        let ty_id = self.idxs.types[&self.fun[*dst]];
-                        let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
-                        let ptr_ty = self.m.isa().pointer_type();
-                        let val = self.ins().global_value(ptr_ty, gv);
-                        let func_ref = self.m.declare_func_in_func(
-                            self.idxs.native_calls["hl_alloc_obj"],
-                            self.builder.func,
-                        );
+                        let val = self.reg_type_val(*dst);
+                        let func_ref = self.native_fun("hl_alloc_obj");
                         let inst = self.ins().call(func_ref, &[val]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Dynobj => {
-                        let func_ref = self.m.declare_func_in_func(
-                            self.idxs.native_calls["hl_alloc_dynobj"],
-                            self.builder.func,
-                        );
+                        let func_ref = self.native_fun("hl_alloc_dynobj");
                         let inst = self.ins().call(func_ref, &[]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Virtual(_) => {
-                        let ty_id = self.idxs.types[&self.fun[*dst]];
-                        let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
-                        let ptr_ty = self.m.isa().pointer_type();
-                        let val = self.ins().global_value(ptr_ty, gv);
-                        let func_ref = self.m.declare_func_in_func(
-                            self.idxs.native_calls["hl_alloc_virtual"],
-                            self.builder.func,
-                        );
+                        let val = self.reg_type_val(*dst);
+                        let func_ref = self.native_fun("hl_alloc_virtual");
                         let inst = self.ins().call(func_ref, &[val]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
@@ -1144,9 +1117,7 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::Type { dst, idx } => {
-                    let ty_id = self.idxs.types[idx];
-                    let gv = self.m.declare_data_in_func(ty_id, self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let ty_val = self.type_val(*idx);
                     self.store_reg(dst, ty_val);
                 }
                 OpCode::GetType { dst, val } => {
@@ -1164,9 +1135,7 @@ impl<'a> EmitCtx<'a> {
                                 "HVoid does not have index 0"
                             );
 
-                            let ty_id = ecx.idxs.types[&TypeIdx(0)];
-                            let gv = ecx.m.declare_data_in_func(ty_id, ecx.builder.func);
-                            let ty_val = ecx.ins().global_value(types::I64, gv);
+                            let ty_val = ecx.type_val(TypeIdx(0));
                             ecx.store_reg(dst, ty_val);
                         },
                         next_block,
@@ -1201,11 +1170,8 @@ impl<'a> EmitCtx<'a> {
                     construct_idx,
                     params,
                 } => {
-                    let alloc_id = self.idxs.native_calls["hl_alloc_enum"];
-                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
-                    let ty = self.idxs.types[&self.fun[*dst]];
-                    let gv = self.m.declare_data_in_func(ty, self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let alloc_ref = self.native_fun("hl_alloc_enum");
+                    let ty_val = self.reg_type_val(*dst);
                     let idx_val = self.ins().iconst(types::I32, construct_idx.0 as i64);
                     let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
                     let enum_val = self.builder.inst_results(inst)[0];
@@ -1219,11 +1185,8 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, enum_val);
                 }
                 OpCode::EnumAlloc { dst, idx } => {
-                    let alloc_id = self.idxs.native_calls["hl_alloc_enum"];
-                    let alloc_ref = self.m.declare_func_in_func(alloc_id, self.builder.func);
-                    let ty = self.idxs.types[&self.fun[*dst]];
-                    let gv = self.m.declare_data_in_func(ty, self.builder.func);
-                    let ty_val = self.ins().global_value(types::I64, gv);
+                    let alloc_ref = self.native_fun("hl_alloc_enum");
+                    let ty_val = self.reg_type_val(*dst);
                     let idx_val = self.ins().iconst(types::I32, idx.0 as i64);
                     let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
                     self.store_reg(dst, self.builder.inst_results(inst)[0]);
@@ -1267,7 +1230,11 @@ impl<'a> EmitCtx<'a> {
                     self.ins()
                         .store(MemFlags::new(), val, enum_val, offset as i32);
                 }
-                OpCode::Assert => self.trap(op),
+                OpCode::Assert => {
+                    let f = self.native_fun("hl_assert");
+                    self.ins().call(f, &[]);
+                    self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
+                },
                 OpCode::RefData { dst, r } => match self.reg_type(r) {
                     HLType::Array => {
                         let r = self.load_reg(r);
@@ -1290,6 +1257,11 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
         }
+        if let Some(b) = self.blocks.get(&self.fun.opcodes.len()) {
+            self.builder.switch_to_block(*b);
+            self.builder.ins().trap(TrapCode::unwrap_user(2));
+        }
+        
         self.seal_all_blocks();
     }
 
@@ -1301,22 +1273,15 @@ impl<'a> EmitCtx<'a> {
             HLType::Int32 | HLType::UInt16 | HLType::UInt8 => "hl_dyn_casti",
             _ => "hl_dyn_castp",
         };
-        let cast_id = self.idxs.native_calls[cast_name];
-        let cast_ref = self.m.declare_func_in_func(cast_id, self.builder.func);
+        let cast_ref = self.native_fun(cast_name);
         let inst = match self.reg_type(dst) {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => {
-                let data_id = self.idxs.types[&val_ty];
-                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
-                let ty = self.ins().global_value(types::I64, global_value);
+                let ty = self.type_val(val_ty);
                 self.ins().call(cast_ref, &[val_addr, ty])
             }
             _ => {
-                let data_id = self.idxs.types[&val_ty];
-                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
-                let src_ty = self.ins().global_value(types::I64, global_value);
-                let data_id = self.idxs.types[&self.fun[*dst]];
-                let global_value = self.m.declare_data_in_func(data_id, self.builder.func);
-                let dst_ty = self.ins().global_value(types::I64, global_value);
+                let src_ty = self.type_val(val_ty);
+                let dst_ty = self.reg_type_val(*dst);
                 self.ins().call(cast_ref, &[val_addr, src_ty, dst_ty])
             }
         };
@@ -1357,7 +1322,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn hash(&mut self, field_name: &UStrIdx) -> Value {
-        let field_name_data_id = self.idxs.ustr[&field_name];
+        let field_name_data_id = self.idxs.ustr[field_name.0];
         let field_name_global_value = self
             .m
             .declare_data_in_func(field_name_data_id, self.builder.func);
@@ -1370,15 +1335,12 @@ impl<'a> EmitCtx<'a> {
     fn type_val(&mut self, ty: TypeIdx) -> Value {
         let gv = self
             .m
-            .declare_data_in_func(self.idxs.types[&ty], self.builder.func);
+            .declare_data_in_func(self.idxs.types[ty.0], self.builder.func);
         self.ins().global_value(types::I64, gv)
     }
 
     fn reg_type_val(&mut self, r: Reg) -> Value {
-        let gv = self
-            .m
-            .declare_data_in_func(self.idxs.types[&self.fun[r]], self.builder.func);
-        self.ins().global_value(types::I64, gv)
+        self.type_val(self.fun[r])
     }
 
     fn emit_dyn_set(&mut self, obj: &Reg, field_name: UStrIdx, val: &Reg) {
@@ -1394,6 +1356,13 @@ impl<'a> EmitCtx<'a> {
             _ => "hl_dyn_setp",
         };
         let dyn_set_ref = self.native_fun(dyn_set_name);
+
+        let val_val = match &self.code[self.fun[*val]] {
+            HLType::Boolean | HLType::UInt8 | HLType::UInt16 => {
+                self.builder.ins().uextend(types::I32, val_val)
+            },
+            _ => val_val
+        };
 
         match &self.code[self.fun[*val]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => self

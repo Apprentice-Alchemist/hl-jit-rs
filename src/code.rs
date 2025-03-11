@@ -1,8 +1,8 @@
-use std::{collections::BTreeMap, ops::Index};
-#[allow(unused)]
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{self, BufReader, ErrorKind, Read},
+    ops::Index,
     path::Path,
 };
 
@@ -28,7 +28,7 @@ impl Reader {
         }
 
         if b & 0x40 == 0 {
-            let v: isize = (self.byte()? as i32 | (b & 31) << 8) as isize;
+            let v: isize = (self.byte()? as i32 | ((b & 31) << 8)) as isize;
             return Ok(if b & 0x20 == 0 { v } else { -v });
         }
 
@@ -265,7 +265,7 @@ impl HLType {
             Self::Int64 => types::I64,
             Self::Float32 => types::F32,
             Self::Float64 => types::F64,
-            Self::Boolean => types::I32,
+            Self::Boolean => types::I8,
             Self::Bytes => types::I64,
             Self::Dynamic => types::I64,
             Self::Function(_) => types::I64,
@@ -456,9 +456,8 @@ fn read_type(r: &mut Reader) -> io::Result<HLType> {
         crate::sys::hl_type_kind_HMETHOD => HLType::Method(read_type_fun(r)?),
         crate::sys::hl_type_kind_HSTRUCT => HLType::Struct(read_obj(r)?),
         crate::sys::hl_type_kind_HPACKED => HLType::Packed(r.r()?),
-        // crate::sys::hl_type_kind_HGUID => HLType::Guid,
+        crate::sys::hl_type_kind_HGUID => HLType::Guid,
         kind => {
-            println!("{}", kind);
             return Err(io::Error::new(ErrorKind::InvalidData, "invalid type kind"));
         }
     };
@@ -494,12 +493,6 @@ pub struct Code {
     pub functions: Vec<HLFunction>,
     pub constants: BTreeMap<GlobalIdx, Vec<usize>>,
     pub entrypoint: FunIdx,
-}
-
-impl Code {
-    pub fn get_type(&self, idx: TypeIdx) -> &HLType {
-        &self.types[idx.0]
-    }
 }
 
 impl Index<TypeIdx> for Code {
@@ -553,7 +546,7 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
     let nnatives = r.udx()?;
     let nfunctions = r.udx()?;
     let nconstants = if version >= 4 { r.udx()? } else { 0 };
-    let entrypoint = FunIdx(r.udx()?);
+    let entrypoint = r.r()?;
 
     let has_debug = flags & 1 == 1;
 
@@ -588,12 +581,12 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         let lib = r.r()?;
         let name = r.r()?;
         let t = r.r()?;
-        let fidx = FunIdx(r.udx()?);
+        let fidx = r.r()?;
         Ok((lib, name, t, fidx))
     })?;
     let functions = r.vec(nfunctions, |r| {
         let ty_ = r.r()?;
-        let idx = FunIdx(r.udx()?);
+        let idx = r.r()?;
         let nregs = r.udx()?;
         let nops = r.udx()?;
         let regs = r.vec(nregs, Reader::r)?;

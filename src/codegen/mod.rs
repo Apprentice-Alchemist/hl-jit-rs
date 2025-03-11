@@ -15,8 +15,8 @@ mod emit;
 
 struct Indexes {
     module_context_id: DataId,
-    types: BTreeMap<TypeIdx, DataId>,
-    ustr: BTreeMap<UStrIdx, DataId>,
+    types: Vec<DataId>,
+    ustr: Vec<DataId>,
     fn_map: BTreeMap<FunIdx, FuncId>,
     fn_type_map: BTreeMap<FunIdx, TypeIdx>,
     globals: BTreeMap<GlobalIdx, DataId>,
@@ -24,9 +24,9 @@ struct Indexes {
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
 }
 
-static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
-    ("fmod", &[types::F64], &[types::F64]),
-    ("fmodf", &[types::F32], &[types::F32]),
+static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
+    ("fmod", &[types::F64, types::F64], &[types::F64]),
+    ("fmodf", &[types::F32, types::F32], &[types::F32]),
     ("hl_alloc_obj", &[types::I64], &[types::I64]),
     ("hl_alloc_dynobj", &[], &[types::I64]),
     ("hl_alloc_virtual", &[types::I64], &[types::I64]),
@@ -86,8 +86,18 @@ static NATIVE_CALLS: &[(&'static str, &[Type], &[Type])] = &[
         &[types::I64],
     ),
     ("hl_alloc_enum", &[types::I64, types::I32], &[types::I64]),
-    ("hl_dyn_call_obj", &[types::I64, types::I64, types::I32, types::I64, types::I64], &[types::I64]),
-    ("hl_dyn_call", &[types::I64, types::I64, types::I32], &[types::I64]),
+    (
+        "hl_dyn_call_obj",
+        &[types::I64, types::I64, types::I32, types::I64, types::I64],
+        &[types::I64],
+    ),
+    (
+        "hl_dyn_call",
+        &[types::I64, types::I64, types::I32],
+        &[types::I64],
+    ),
+    ("hl_assert", &[], &[]),
+    ("hl_null_access", &[], &[]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -197,7 +207,7 @@ impl<'a> CodegenCtx<'a> {
         let hl_hash_id = self.idxs.native_calls["hl_hash"];
         let hl_hash_ref = self.m.declare_func_in_func(hl_hash_id, &mut bcx.func);
         for (str, locs) in &self.idxs.hash_locations {
-            let gv = self.m.declare_data_in_func(self.idxs.ustr[str], bcx.func);
+            let gv = self.m.declare_data_in_func(self.idxs.ustr[str.0], bcx.func);
             let str_val = bcx.ins().global_value(types::I64, gv);
             let inst = bcx.ins().call(hl_hash_ref, &[str_val]);
             let hash = bcx.inst_results(inst)[0];
@@ -217,8 +227,8 @@ impl<'a> CodegenCtx<'a> {
             .m
             .declare_data_in_func(self.idxs.module_context_id, &mut bcx.func);
         let module_context_val = bcx.ins().global_value(types::I64, module_context_gv);
-        for (ty, data) in &self.idxs.types {
-            match &code[*ty] {
+        for (ty, data) in self.idxs.types.iter().enumerate() {
+            match &code[TypeIdx(ty)] {
                 HLType::Enum(_) => {
                     let val = self.m.declare_data_in_func(*data, &mut bcx.func);
                     let val = bcx.ins().global_value(types::I64, val);
@@ -255,7 +265,7 @@ impl<'a> CodegenCtx<'a> {
 }
 
 fn fill_signature_ty(code: &Code, sig: &mut Signature, ty: TypeIdx) {
-    let (args, ret) = match code.get_type(ty) {
+    let (args, ret) = match &code[ty] {
         HLType::Function(TypeFun { args, ret }) => (args, ret),
         HLType::Method(TypeFun { args, ret }) => (args, ret),
         _ => panic!(),
@@ -266,9 +276,16 @@ fn fill_signature_ty(code: &Code, sig: &mut Signature, ty: TypeIdx) {
 fn fill_signature(code: &Code, sig: &mut Signature, args: &[TypeIdx], ret: TypeIdx) {
     sig.params.extend(
         args.iter()
-            .map(|idx| AbiParam::new(code.get_type(*idx).cranelift_type())),
+            .filter_map(|idx| {
+                if !code[*idx].is_void() {
+                    let clir_ty = code[*idx].cranelift_type();
+                    Some(AbiParam::new(clir_ty))
+                } else {
+                    None
+                }
+            }),
     );
-    let ret_ty = code.get_type(ret);
+    let ret_ty = &code[ret];
     if !ret_ty.is_void() {
         sig.returns.push(AbiParam::new(ret_ty.cranelift_type()));
     }

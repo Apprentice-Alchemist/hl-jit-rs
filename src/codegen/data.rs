@@ -16,14 +16,16 @@ use crate::{
 use super::Indexes;
 
 pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<(), Box<dyn Error>> {
+    idxs.types.reserve(code.types.len());
     for idx in 0..code.types.len() {
         let id = m.declare_data(&format!("type{idx}"), Linkage::Local, true, false)?;
-        idxs.types.insert(TypeIdx(idx), id);
+        idxs.types.push(id);
     }
 
+    idxs.ustr.reserve(code.strings.len());
     for idx in 0..code.strings.len() {
         let id = m.declare_data(&format!("str{idx}"), Linkage::Local, true, false)?;
-        idxs.ustr.insert(UStrIdx(idx), id);
+        idxs.ustr.push(id);
     }
 
     for idx in 0..code.globals.len() {
@@ -56,7 +58,7 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
             write_data(
                 m,
                 &mut fun_type_data,
-                idxs.types[&fun.ty],
+                idxs.types[fun.ty.0],
                 fun.idx.0 * m.isa().pointer_bytes() as usize,
             );
         }
@@ -70,7 +72,7 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
             write_data(
                 m,
                 &mut fun_type_data,
-                idxs.types[ty],
+                idxs.types[ty.0],
                 fidx.0 * m.isa().pointer_bytes() as usize,
             );
         }
@@ -100,7 +102,7 @@ pub fn define_strings(
     idxs: &Indexes,
 ) -> Result<(), Box<dyn Error>> {
     for (idx, s) in code.strings.iter().enumerate() {
-        let id = idxs.ustr[&UStrIdx(idx)];
+        let id = idxs.ustr[idx];
         let mut data = DataDescription::new();
         let mut buf = Vec::new();
         for c in s.encode_utf16() {
@@ -146,7 +148,7 @@ fn build_type_arr(
         write_data(
             m,
             &mut data,
-            idxs.types[ty],
+            idxs.types[ty.0],
             size_of::<*mut hl_type>() * pos,
         );
     }
@@ -167,7 +169,7 @@ fn build_type_fun(m: &mut dyn Module, idxs: &Indexes, f: &TypeFun) -> Result<Dat
     write_data(
         m,
         &mut data,
-        idxs.types[&f.ret],
+        idxs.types[f.ret.0],
         offset_of!(hl_type_fun, ret),
     );
     let arr_id = build_type_arr(m, idxs, &f.args)?;
@@ -191,13 +193,13 @@ fn build_field_arr(
         write_data(
             m,
             &mut data,
-            idxs.ustr[ustr],
+            idxs.ustr[ustr.0],
             size_of::<hl_obj_field>() * pos + offset_of!(hl_obj_field, name),
         );
         write_data(
             m,
             &mut data,
-            idxs.types[ty],
+            idxs.types[ty.0],
             size_of::<hl_obj_field>() * pos + offset_of!(hl_obj_field, t),
         );
 
@@ -237,7 +239,7 @@ fn build_proto_arr(
         write_data(
             m,
             &mut data,
-            idxs.ustr[ustr],
+            idxs.ustr[ustr.0],
             size_of::<hl_obj_proto>() * pos + offset_of!(hl_obj_proto, name),
         );
         idxs.hash_locations.entry(*ustr).or_default().push((
@@ -300,12 +302,12 @@ fn build_type_obj(
             .copy_from_slice(&nbindings.to_ne_bytes());
         data.define(buf.into_boxed_slice());
     }
-    write_data(m, &mut data, idxs.ustr[name], offset_of!(hl_type_obj, name));
+    write_data(m, &mut data, idxs.ustr[name.0], offset_of!(hl_type_obj, name));
     if let Some(super_) = super_ {
         write_data(
             m,
             &mut data,
-            idxs.types[super_],
+            idxs.types[super_.0],
             offset_of!(hl_type_obj, super_),
         );
     }
@@ -372,7 +374,7 @@ fn build_enum_constructs(
         write_data(
             m,
             &mut data,
-            idxs.ustr[name],
+            idxs.ustr[name.0],
             pos * size_of::<hl_enum_construct>() + offset_of!(hl_enum_construct, name),
         );
         let id = build_type_arr(m, idxs, &types).unwrap();
@@ -415,7 +417,7 @@ fn build_type_enum(
     write_data(
         m,
         &mut data,
-        idxs.ustr[&e.name],
+        idxs.ustr[e.name.0],
         offset_of!(hl_type_enum, name),
     );
     let constructs_id = build_enum_constructs(m, idxs, &e.constructs);
@@ -443,7 +445,7 @@ pub fn define_types(
     idxs: &mut Indexes,
 ) -> Result<(), Box<dyn Error>> {
     for (pos, ty) in code.types.iter().enumerate() {
-        let id = idxs.types[&TypeIdx(pos)];
+        let id = idxs.types[pos];
         let mut data = DataDescription::new();
         data.set_align(align_of::<crate::sys::hl_type>() as u64);
         let mut buf: Vec<u8> = vec![0u8; size_of::<crate::sys::hl_type>()];
@@ -466,15 +468,15 @@ pub fn define_types(
             HLType::Object(type_obj) => Some(build_type_obj(m, code, idxs, type_obj)?),
             HLType::Array => None,
             HLType::Type => None,
-            HLType::Reference(type_idx) => Some(idxs.types[type_idx]),
+            HLType::Reference(type_idx) => Some(idxs.types[type_idx.0]),
             HLType::Virtual(virt) => Some(build_type_virtual(m, idxs, virt)?),
             HLType::Dynobj => None,
-            HLType::Abstract(ustr_idx) => Some(idxs.ustr[ustr_idx]),
+            HLType::Abstract(ustr_idx) => Some(idxs.ustr[ustr_idx.0]),
             HLType::Enum(type_enum) => Some(build_type_enum(m, idxs, type_enum)?),
-            HLType::Null(type_idx) => Some(idxs.types[type_idx]),
+            HLType::Null(type_idx) => Some(idxs.types[type_idx.0]),
             HLType::Method(fun) => Some(build_type_fun(m, &idxs, fun)?),
             HLType::Struct(type_obj) => Some(build_type_obj(m, code, idxs, type_obj)?),
-            HLType::Packed(type_idx) => Some(idxs.types[type_idx]),
+            HLType::Packed(type_idx) => Some(idxs.types[type_idx.0]),
             HLType::Guid => None,
         };
 
@@ -507,7 +509,7 @@ pub fn define_globals(m: &mut dyn Module, code: &Code, idxs: &Indexes) {
                 HLType::Object(obj) => {
                     assert!(obj.super_.is_none());
                     buf.extend_from_slice(&[0u8; 8]);
-                    writes.push((0, idxs.types[&code[*gidx]]));
+                    writes.push((0, idxs.types[code[*gidx].0]));
                     for (pos, (_, ty)) in obj.fields.iter().enumerate() {
                         let ty = &code[*ty];
                         match ty {
@@ -519,7 +521,7 @@ pub fn define_globals(m: &mut dyn Module, code: &Code, idxs: &Indexes) {
                                 if buf.len() % 8 != 0 {
                                     buf.extend_from_slice(&[0u8; 4]);
                                 }
-                                writes.push((buf.len(), idxs.ustr[&UStrIdx(values[pos])]));
+                                writes.push((buf.len(), idxs.ustr[values[pos]]));
                                 buf.extend_from_slice(&[0u8; 8]);
                             }
                             _ => panic!(),

@@ -17,7 +17,7 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
             "?std\0" => ("hl", "/usr/local/lib/libhl.so".to_string()),
             "builtin\0" => continue,
             val => (
-                val,
+                &val[0..val.len() - 1],
                 format!("/usr/local/lib/{}.hdll", &val[0..val.len() - 1]),
             ),
         };
