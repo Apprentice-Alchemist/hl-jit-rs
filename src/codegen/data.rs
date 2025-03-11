@@ -27,6 +27,17 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
         let id = m.declare_data(&format!("str{idx}"), Linkage::Local, true, false)?;
         idxs.ustr.push(id);
     }
+    if let Some(bytes) = &code.bytes {
+        idxs.bytes.reserve(bytes.len());
+        let mut data = DataDescription::new();
+        for idx in 0..bytes.len() {
+            let id = m.declare_data(&format!("bytes{idx}"), Linkage::Local, true, false)?;
+            idxs.bytes.push(id);
+            data.define(bytes[idx].clone());
+            m.define_data(id, &data);
+            data.clear();
+        }
+    }
 
     for idx in 0..code.globals.len() {
         let id = m.declare_data(&format!("global{idx}"), Linkage::Local, true, false)?;

@@ -290,13 +290,11 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::Bytes { dst, idx } => {
-                    let gval = if self.code.version >= 5 {
-                        todo!("handle OBytes for version >= 5")
+                    let gval = if let Some(_) = self.code.bytes {
+                        self.m.declare_data_in_func(self.idxs.bytes[idx.0 as usize], self.builder.func)
                     } else {
-                        self.m.declare_data_in_func(
-                            self.idxs.ustr[idx.0 as usize],
-                            self.builder.func,
-                        )
+                        self.m
+                            .declare_data_in_func(self.idxs.ustr[idx.0 as usize], self.builder.func)
                     };
                     let val = self.ins().global_value(types::I64, gval);
                     self.store_reg(dst, val);
@@ -572,7 +570,13 @@ impl<'a> EmitCtx<'a> {
                                     );
                                     let mut vargs = Vec::new();
                                     vargs.push(this_val);
-                                    vargs.extend(args.iter().map(|a| ecx.load_reg(a)));
+                                    vargs.extend(args.iter().filter_map(|a| {
+                                        if !ecx.reg_type(a).is_void() {
+                                            Some(ecx.load_reg(a))
+                                        } else {
+                                            None
+                                        }
+                                    }));
                                     let sig_ref = ecx.import_signature(sig);
                                     let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
                                     if !ecx.reg_type(dst).is_void() {
@@ -591,7 +595,13 @@ impl<'a> EmitCtx<'a> {
                                         ecx.fun[*dst],
                                     );
                                     let mut vargs = Vec::new();
-                                    vargs.extend(args.iter().map(|a| ecx.load_reg(a)));
+                                    vargs.extend(args.iter().filter_map(|a| {
+                                        if !ecx.reg_type(a).is_void() {
+                                            Some(ecx.load_reg(a))
+                                        } else {
+                                            None
+                                        }
+                                    }));
                                     let sig_ref = ecx.import_signature(sig);
                                     let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
                                     if !ecx.reg_type(dst).is_void() {
@@ -851,6 +861,10 @@ impl<'a> EmitCtx<'a> {
                 OpCode::JAlways { offset } => {
                     let block = self.block_for_offset(offset);
                     self.ins().jump(block, &[]);
+                    if pos < self.fun.opcodes.len() {
+                        let b = self.next_block();
+                        self.switch_to_block(b);
+                    }
                 }
                 OpCode::ToDyn { dst, val } => match self.reg_type(val) {
                     HLType::Boolean => {
@@ -917,15 +931,9 @@ impl<'a> EmitCtx<'a> {
                     let val = self.load_reg(val);
                     let val = if src_ty.is_int() && dst_ty.is_int() {
                         match src_ty.bits().cmp(&dst_ty.bits()) {
-                            std::cmp::Ordering::Greater => {
-                                self.ins().ireduce(dst_ty, val)
-                            }
-                            std::cmp::Ordering::Less => {
-                                self.ins().sextend(dst_ty, val)
-                            }
-                            std::cmp::Ordering::Equal => {
-                                val
-                            }
+                            std::cmp::Ordering::Greater => self.ins().ireduce(dst_ty, val),
+                            std::cmp::Ordering::Less => self.ins().sextend(dst_ty, val),
+                            std::cmp::Ordering::Equal => val,
                         }
                     } else {
                         if dst_ty.bytes() < 4 {
@@ -977,12 +985,16 @@ impl<'a> EmitCtx<'a> {
                     let f = self.native_fun("hl_throw");
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
+                    let b = self.next_block();
+                    self.switch_to_block(b);
                 }
                 OpCode::Rethrow(reg) => {
                     let val = self.load_reg(reg);
                     let f = self.native_fun("hl_rethrow");
                     self.ins().call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
+                    let b = self.next_block();
+                    self.switch_to_block(b);
                 }
                 OpCode::Switch { val, cases, end } => {
                     let val_val = self.load_reg(val);
@@ -991,7 +1003,6 @@ impl<'a> EmitCtx<'a> {
                         switch.set_entry(val as u128, self.block_for_offset(case));
                     }
                     let end_block = self.block_for_offset(end);
-                    dbg!((val, end, end_block));
                     switch.emit(self, val_val, end_block);
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
@@ -1009,9 +1020,11 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Trap { dst, jump_off } => {
                     self.block_for_offset(jump_off);
+                    self.ins().nop();
                 }
                 OpCode::EndTrap { something } => {
-                    self.block_for_offset(something);
+                    self.ins().nop();
+                    // self.block_for_offset(something);
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
@@ -1234,7 +1247,7 @@ impl<'a> EmitCtx<'a> {
                     let f = self.native_fun("hl_assert");
                     self.ins().call(f, &[]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
-                },
+                }
                 OpCode::RefData { dst, r } => match self.reg_type(r) {
                     HLType::Array => {
                         let r = self.load_reg(r);
@@ -1253,7 +1266,9 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::Nop => (),
-                OpCode::Prefetch { args } => panic!("unsupported instruction: OPrefetch"),
+                OpCode::Prefetch { args } => {
+                    self.ins().nop();
+                }
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
         }
@@ -1261,7 +1276,7 @@ impl<'a> EmitCtx<'a> {
             self.builder.switch_to_block(*b);
             self.builder.ins().trap(TrapCode::unwrap_user(2));
         }
-        
+
         self.seal_all_blocks();
     }
 
@@ -1360,8 +1375,8 @@ impl<'a> EmitCtx<'a> {
         let val_val = match &self.code[self.fun[*val]] {
             HLType::Boolean | HLType::UInt8 | HLType::UInt16 => {
                 self.builder.ins().uextend(types::I32, val_val)
-            },
-            _ => val_val
+            }
+            _ => val_val,
         };
 
         match &self.code[self.fun[*val]] {

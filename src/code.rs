@@ -485,7 +485,7 @@ pub struct Code {
     pub ints: Vec<i32>,
     pub floats: Vec<f64>,
     pub strings: Vec<String>,
-    pub bytes: Option<(Vec<u8>, Vec<usize>)>,
+    pub bytes: Option<Vec<Box<[u8]>>>,
     pub debugfiles: Option<Vec<String>>,
     pub types: Vec<HLType>,
     pub globals: Vec<TypeIdx>,
@@ -559,11 +559,15 @@ pub fn read_code(mut r: Reader) -> Result<Code, std::io::Error> {
         let mut bytes = Vec::new();
         bytes.resize(size, 0);
         r.0.read_exact(&mut bytes)?;
-        let mut positions = Vec::with_capacity(nbytes);
+        let mut cursor = std::io::Cursor::new(buf);
+        let mut bytes_vec = Vec::with_capacity(nbytes);
         for _ in 0..nbytes {
-            positions.push(r.udx()?)
+            let sz = r.udx()?;
+            let mut buf = vec![0; sz];
+            cursor.read_exact(&mut buf);
+            bytes_vec.push(buf.into_boxed_slice());
         }
-        Some((bytes, positions))
+        Some(bytes_vec)
     } else {
         None
     };
