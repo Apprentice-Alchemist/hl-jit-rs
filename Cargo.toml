@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/hl-code"]
+members = ["crates/hl-code", "crates/hl-code-derive"]
 
 [package]
 name = "hl-jit"

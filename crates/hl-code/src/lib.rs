@@ -8,17 +8,19 @@ use std::{
     path::Path,
 };
 
+use hl_code_derive::Readable;
+
 pub use crate::opcode::{Idx, OpCode, Reg};
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
 pub struct TypeIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
 pub struct UStrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
 pub struct StrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
 pub struct FunIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
 pub struct GlobalIdx(pub usize);
 
 #[derive(Clone, Debug)]
@@ -49,7 +51,7 @@ pub struct TypeVirtual {
     pub fields: Vec<(UStrIdx, TypeIdx)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Readable)]
 pub enum HLType {
     Void,
     UInt8,

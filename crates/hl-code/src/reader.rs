@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    Code, FunIdx, GlobalIdx, HLFunction, HLType, StrIdx, TypeEnum, TypeFun, TypeIdx, TypeObj,
+    Code, GlobalIdx, HLFunction, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj,
     TypeVirtual, UStrIdx,
 };
 
@@ -91,46 +91,6 @@ pub trait Readable {
         Self: Sized;
 }
 
-impl Readable for TypeIdx {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self(r.udx()?))
-    }
-}
-impl Readable for UStrIdx {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self(r.udx()?))
-    }
-}
-impl Readable for StrIdx {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self(r.udx()?))
-    }
-}
-impl Readable for FunIdx {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self(r.udx()?))
-    }
-}
-impl Readable for GlobalIdx {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(Self(r.udx()?))
-    }
-}
 impl Readable for TypeObj {
     fn r(r: &mut Reader) -> io::Result<Self>
     where
@@ -233,47 +193,47 @@ impl Readable for TypeEnum {
     }
 }
 
-impl Readable for HLType {
-    fn r(r: &mut Reader) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        let kind = r.byte()?;
-        let t = match kind as u32 {
-            0 => HLType::Void,
-            1 => HLType::UInt8,
-            2 => HLType::UInt16,
-            3 => HLType::Int32,
-            4 => HLType::Int64,
-            5 => HLType::Float32,
-            6 => HLType::Float64,
-            7 => HLType::Boolean,
-            8 => HLType::Bytes,
-            9 => HLType::Dynamic,
-            10 => HLType::Function(r.r()?),
-            11 => HLType::Object(r.r()?),
-            12 => HLType::Array,
-            13 => HLType::Type,
-            14 => HLType::Reference(r.r()?),
-            15 => HLType::Virtual(r.r()?),
-            16 => HLType::Dynobj,
-            17 => HLType::Abstract(r.r()?),
-            18 => HLType::Enum(r.r()?),
-            19 => HLType::Null(r.r()?),
-            20 => HLType::Method(r.r()?),
-            21 => HLType::Struct(r.r()?),
-            22 => HLType::Packed(r.r()?),
-            23 => HLType::Guid,
-            kind => {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidData,
-                    format!("invalid type kind: {kind}"),
-                ));
-            }
-        };
-        Ok(t)
-    }
-}
+// impl Readable for HLType {
+//     fn r(r: &mut Reader) -> io::Result<Self>
+//     where
+//         Self: Sized,
+//     {
+//         let kind = r.byte()?;
+//         let t = match kind as u32 {
+//             0 => HLType::Void,
+//             1 => HLType::UInt8,
+//             2 => HLType::UInt16,
+//             3 => HLType::Int32,
+//             4 => HLType::Int64,
+//             5 => HLType::Float32,
+//             6 => HLType::Float64,
+//             7 => HLType::Boolean,
+//             8 => HLType::Bytes,
+//             9 => HLType::Dynamic,
+//             10 => HLType::Function(r.r()?),
+//             11 => HLType::Object(r.r()?),
+//             12 => HLType::Array,
+//             13 => HLType::Type,
+//             14 => HLType::Reference(r.r()?),
+//             15 => HLType::Virtual(r.r()?),
+//             16 => HLType::Dynobj,
+//             17 => HLType::Abstract(r.r()?),
+//             18 => HLType::Enum(r.r()?),
+//             19 => HLType::Null(r.r()?),
+//             20 => HLType::Method(r.r()?),
+//             21 => HLType::Struct(r.r()?),
+//             22 => HLType::Packed(r.r()?),
+//             23 => HLType::Guid,
+//             kind => {
+//                 return Err(io::Error::new(
+//                     ErrorKind::InvalidData,
+//                     format!("invalid type kind: {kind}"),
+//                 ));
+//             }
+//         };
+//         Ok(t)
+//     }
+// }
 
 fn read_strings(r: &mut Reader, nstrings: usize) -> io::Result<Vec<String>> {
     let size = r.int()? as usize;
