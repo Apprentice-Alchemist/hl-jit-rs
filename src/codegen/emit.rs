@@ -7,6 +7,7 @@ use cranelift::frontend::Switch;
 use cranelift::module::DataDescription;
 use cranelift::prelude::*;
 use cranelift::{codegen::ir::StackSlot, module::Module};
+use hl_code::FunIdx;
 
 use crate::code::TypeFun;
 use crate::sys::{vclosure, vdynamic, venum};
@@ -289,7 +290,7 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::Bool { dst, val } => {
-                    let val = self.ins().iconst(types::I8, *val as i64);
+                    let val = self.ins().iconst(types::I8, val.0 as i64);
                     self.store_reg(dst, val)
                 }
                 OpCode::Bytes { dst, idx } => {
@@ -475,24 +476,11 @@ impl<'a> EmitCtx<'a> {
                         self.store_reg(dst, self.builder.inst_results(i)[0]);
                     }
                 }
-                OpCode::Call1 { dst, f, args }
-                | OpCode::Call2 { dst, f, args }
-                | OpCode::Call3 { dst, f, args }
-                | OpCode::Call4 { dst, f, args }
-                | OpCode::CallN { dst, f, args } => {
-                    let f_ref = self
-                        .m
-                        .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
-                    let args = &args
-                        .iter()
-                        .map(|r| self.load_reg(r))
-                        .collect::<Vec<Value>>();
-                    let i = self.ins().call(f_ref, args);
-                    if !self.reg_type(dst).is_void() {
-                        self.store_reg(dst, self.builder.inst_results(i)[0]);
-                    }
-                }
-
+                OpCode::Call1 { dst, f, args } => self.emit_call(dst, f, &args[..]),
+                OpCode::Call2 { dst, f, args } => self.emit_call(dst, f, &args[..]),
+                OpCode::Call3 { dst, f, args } => self.emit_call(dst, f, &args[..]),
+                OpCode::Call4 { dst, f, args } => self.emit_call(dst, f, &args[..]),
+                OpCode::CallN { dst, f, args } => self.emit_call(dst, f, &args),
                 OpCode::CallMethod { dst, fid, args } => match args[..] {
                     [this, ref args @ ..] => self.emit_method_call(dst, *fid, this, args),
                     _ => panic!("invalid OCallMethod, not enough args"),
@@ -1293,6 +1281,20 @@ impl<'a> EmitCtx<'a> {
         }
 
         self.seal_all_blocks();
+    }
+
+    fn emit_call(&mut self, dst: &Reg, f: &FunIdx, args: &[Reg]) {
+        let f_ref = self
+            .m
+            .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
+        let args = &args
+            .iter()
+            .map(|r| self.load_reg(r))
+            .collect::<Vec<Value>>();
+        let i = self.ins().call(f_ref, args);
+        if !self.reg_type(dst).is_void() {
+            self.store_reg(dst, self.builder.inst_results(i)[0]);
+        }
     }
 
     fn emit_dyn_cast(&mut self, dst: &Reg, val_ty: TypeIdx, val_addr: Value) {

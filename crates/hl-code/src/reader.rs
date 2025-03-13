@@ -6,8 +6,7 @@ use std::{
 };
 
 use crate::{
-    Code, GlobalIdx, HLFunction, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj,
-    TypeVirtual, UStrIdx,
+    Code, GlobalIdx, HLFunction, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx,
 };
 
 pub struct Reader(BufReader<File>);
@@ -89,6 +88,24 @@ pub trait Readable {
     fn r(r: &mut Reader) -> io::Result<Self>
     where
         Self: Sized;
+}
+
+impl<const N: usize, T> Readable for [T; N]
+where
+    T: Readable,
+{
+    fn r(r: &mut Reader) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut out = [const { std::mem::MaybeUninit::<T>::uninit() }; N];
+        for i in 0..N {
+            out[i] = std::mem::MaybeUninit::new(r.r()?);
+        }
+        // Safety: every element of `out` is initalized and we are transmuting to an array with identical layout
+        // Note: transmute_copy is required otherwise the compiler complains
+        Ok(unsafe { std::mem::transmute_copy(&out) })
+    }
 }
 
 impl Readable for TypeObj {
