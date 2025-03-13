@@ -73,13 +73,17 @@ extern "C" fn resolve_symbol(addr: *mut c_void, out: *mut u16, out_size: *mut c_
 }
 extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
     let mut pos = 0;
-    backtrace::trace(|frame| {
-        unsafe {
-            stack.add(pos as usize).write(frame.ip());
-        }
-        pos += 1;
-        pos < size
-    });
+    if stack.is_null() {
+        backtrace::trace(|_| { pos += 1; true });
+    } else {
+        backtrace::trace(|frame| {
+            unsafe {
+                stack.add(pos as usize).write(frame.ip());
+            }
+            pos += 1;
+            pos < size
+        });
+    }
     pos
 }
 
@@ -95,19 +99,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         let (m, entrypoint) = crate::jit::compile_module(code);
         unsafe extern "C" {
-            unsafe fn ffi_static_call(
+            unsafe fn hlc_static_call(
                 fun: *mut c_void,
                 ft: *mut hl_type,
                 args: *mut *mut c_void,
                 out: *mut vdynamic,
             ) -> *mut c_void;
-            unsafe fn ffi_get_wrapper(ty: *mut hl_type) -> *mut c_void;
+            unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
         }
         unsafe {
             sys::hl_global_init();
             sys::hl_setup_callbacks(
-                ffi_static_call as *mut c_void,
-                ffi_get_wrapper as *mut c_void,
+                hlc_static_call as *mut c_void,
+                hlc_get_wrapper as *mut c_void,
             );
             sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
             sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());

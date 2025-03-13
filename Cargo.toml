@@ -5,6 +5,7 @@ edition = "2024"
 license = "Apache-2.0 WITH LLVM-exception"
 
 [dependencies]
+backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
 cranelift = { version = "0.116.1", features = ["jit", "module", "native", "object"] }
 libloading = "0.8.6"

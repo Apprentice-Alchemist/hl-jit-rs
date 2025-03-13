@@ -3,14 +3,15 @@ use cranelift::{
     object::{ObjectBuilder, ObjectModule, ObjectProduct},
     prelude::{
         isa::lookup,
-        settings::{self, Flags},
+        settings::{self, Flags}, Configurable,
     },
 };
 
 use crate::codegen::CodegenCtx;
 
 pub fn compile_module(code: crate::code::Code) -> ObjectProduct {
-    let builder = settings::builder();
+    let mut builder = settings::builder();
+    builder.set("is_pic", "true");
     let flags = Flags::new(builder);
     let isa = cranelift::native::builder().unwrap().finish(flags).unwrap();
     let mod_builder =

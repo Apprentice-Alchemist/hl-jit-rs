@@ -29,7 +29,7 @@ static ffi_type *to_ffi(hl_type *t) {
   }
 }
 
-HL_API void *ffi_static_call(void *fun, hl_type *ft, void **args,
+HL_API void *hlc_static_call(void *fun, hl_type *ft, void **args,
                              vdynamic *out) {
   ffi_cif cif = {0};
   ffi_type **atypes = alloca(sizeof(ffi_type *) * ft->fun->nargs);
@@ -72,7 +72,7 @@ static void call_wrapper(ffi_cif *cif, void *ret, void **args,
   }
 }
 
-HL_API void *ffi_get_wrapper(hl_type *t) {
+HL_API void *hlc_get_wrapper(hl_type *t) {
   void *codeloc;
   ffi_closure *closure = ffi_closure_alloc(sizeof(ffi_closure), &codeloc);
   ffi_cif *cif = malloc(sizeof(ffi_cif));
