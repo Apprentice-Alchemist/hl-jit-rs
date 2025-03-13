@@ -1,19 +1,11 @@
 use std::io;
 
-use cranelift::prelude::{EntityRef, Variable};
-
 use crate::{
     code::{FunIdx, GlobalIdx, Readable, TypeIdx, UStrIdx},
     Reader,
 };
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Reg(pub(crate) usize);
-
-impl Reg {
-    pub fn var(self) -> Variable {
-        Variable::new(self.0)
-    }
-}
 
 impl crate::code::Readable for Reg {
     fn r(r: &mut Reader) -> io::Result<Self>

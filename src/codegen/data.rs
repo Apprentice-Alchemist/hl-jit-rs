@@ -462,7 +462,7 @@ pub fn define_types(
         let mut buf: Vec<u8> = vec![0u8; size_of::<crate::sys::hl_type>()];
         let kind_offset = offset_of!(hl_type, kind);
         buf[kind_offset..kind_offset + size_of::<hl_type_kind>()]
-            .copy_from_slice(&ty.type_kind().to_ne_bytes());
+            .copy_from_slice(&ty.as_u32().to_ne_bytes());
         data.define(buf.into_boxed_slice());
         let data_id = match ty {
             HLType::Void => None,
