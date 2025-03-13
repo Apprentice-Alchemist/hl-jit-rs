@@ -7,12 +7,11 @@ use cranelift::{
 };
 
 use crate::{
-    code::{Code, FunIdx, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx}, sys::{
+    code::{Code, FunIdx, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx, Idx}, sys::{
         hl_enum_construct, hl_module_context, hl_obj_field, hl_obj_proto, hl_type, hl_type_enum,
         hl_type_fun, hl_type_kind, hl_type_obj, hl_type_virtual,
     }
 };
-use hl_code::opcode::Idx;
 
 use super::Indexes;
 

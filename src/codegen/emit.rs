@@ -11,10 +11,9 @@ use cranelift::{codegen::ir::StackSlot, module::Module};
 use crate::code::TypeFun;
 use crate::sys::{vclosure, vdynamic, venum};
 use crate::{
-    code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
+    code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx},
     sys::{hl_type, varray, vvirtual},
 };
-use hl_code::opcode::{Idx, OpCode, Reg};
 
 use super::{CodegenCtx, Indexes};
 
@@ -1443,9 +1442,9 @@ impl<'a> EmitCtx<'a> {
 
     pub fn emit_jump(
         &mut self,
-        a: &hl_code::opcode::Reg,
-        b: &hl_code::opcode::Reg,
-        offset: &hl_code::opcode::Idx,
+        a: &Reg,
+        b: &Reg,
+        offset: &Idx,
         int_cc: IntCC,
         float_cc: Option<FloatCC>,
     ) {

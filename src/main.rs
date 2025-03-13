@@ -1,6 +1,5 @@
 #![allow(unused, dead_code)]
 use clap::Parser;
-use hl_code::Reader;
 use cranelift::jit::{JITBuilder, JITModule};
 use std::{
     error::Error,
@@ -89,8 +88,7 @@ extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = Args::parse();
-    let reader = Reader::open_file(&args.file)?;
-    let code = crate::code::read_code(reader)?;
+    let code = hl_code::Code::from_file(&args.file)?;
 
     if let Some(ref output) = args.output {
         let product = crate::object::compile_module(code);
