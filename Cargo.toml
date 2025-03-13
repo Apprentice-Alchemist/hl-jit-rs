@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/hl-code"]
+
 [package]
 name = "hl-jit"
 version = "0.1.0"
@@ -9,6 +12,7 @@ backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
 cranelift = { version = "0.117.2", features = ["jit", "module", "native", "object"] }
 libloading = "0.8.6"
+hl-code = { path = "crates/hl-code" }
 
 [build-dependencies]
 bindgen = "0.71.1"

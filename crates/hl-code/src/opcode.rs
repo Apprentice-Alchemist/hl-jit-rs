@@ -1,13 +1,10 @@
 use std::io;
 
-use crate::{
-    code::{FunIdx, GlobalIdx, Readable, TypeIdx, UStrIdx},
-    Reader,
-};
+use crate::{FunIdx, GlobalIdx, Readable, Reader, TypeIdx, UStrIdx};
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Reg(pub(crate) usize);
+pub struct Reg(pub usize);
 
-impl crate::code::Readable for Reg {
+impl crate::Readable for Reg {
     fn r(r: &mut Reader) -> io::Result<Self>
     where
         Self: Sized,
@@ -18,7 +15,7 @@ impl crate::code::Readable for Reg {
 #[derive(Copy, Clone, Debug)]
 pub struct Idx(pub isize);
 
-impl crate::code::Readable for Idx {
+impl crate::Readable for Idx {
     fn r(r: &mut Reader) -> io::Result<Self>
     where
         Self: Sized,

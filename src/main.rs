@@ -1,6 +1,6 @@
 #![allow(unused, dead_code)]
 use clap::Parser;
-use code::Reader;
+use hl_code::Reader;
 use cranelift::jit::{JITBuilder, JITModule};
 use std::{
     error::Error,
@@ -11,11 +11,11 @@ use std::{
 };
 use sys::{hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HFUN, vclosure, vdynamic};
 
-mod code;
+pub use hl_code as code;
+
 mod codegen;
 mod jit;
 mod object;
-mod opcode;
 mod sys {
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]

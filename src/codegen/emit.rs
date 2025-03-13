@@ -12,9 +12,9 @@ use crate::code::TypeFun;
 use crate::sys::{vclosure, vdynamic, venum};
 use crate::{
     code::{Code, HLFunction, HLType, TypeIdx, TypeObj, UStrIdx},
-    opcode::{Idx, OpCode, Reg},
     sys::{hl_type, varray, vvirtual},
 };
+use hl_code::opcode::{Idx, OpCode, Reg};
 
 use super::{CodegenCtx, Indexes};
 
@@ -86,7 +86,7 @@ impl<'a> EmitCtx<'a> {
         let mut builder = FunctionBuilder::new(&mut ctx.func, f_ctx);
         for (idx, ty) in fun.regs.iter().enumerate() {
             if !code[*ty].is_void() {
-                let t = code[*ty].cranelift_type();
+                let t = super::cranelift_type(&code[*ty]);
                 regs.insert(
                     Reg(idx),
                     (
@@ -98,7 +98,6 @@ impl<'a> EmitCtx<'a> {
                         t,
                     ),
                 );
-                // builder.declare_var(Variable::new(idx), code[*ty].cranelift_type());
             }
         }
 
@@ -242,6 +241,10 @@ impl<'a> EmitCtx<'a> {
         &self.code[self.fun[*reg]]
     }
 
+    pub fn reg_cl_ty(&self, reg: &Reg) -> Type {
+        super::cranelift_type(self.reg_type(reg))
+    }
+
     pub fn translate_body(&mut self) {
         let mut has_switched = true;
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
@@ -292,7 +295,10 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Bytes { dst, idx } => {
                     let gval = if let Some(_) = self.code.bytes {
-                        self.m.declare_data_in_func(self.idxs.bytes[idx.0 as usize], self.builder.func)
+                        self.m.declare_data_in_func(
+                            self.idxs.bytes[idx.0 as usize],
+                            self.builder.func,
+                        )
                     } else {
                         self.m
                             .declare_data_in_func(self.idxs.ustr[idx.0 as usize], self.builder.func)
@@ -449,14 +455,14 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Incr { dst } => {
                     let val = self.load_reg(dst);
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let one = self.ins().iconst(ty, 1i64);
                     let new_val = self.ins().iadd(val, one);
                     self.store_reg(dst, new_val);
                 }
                 OpCode::Decr { dst } => {
                     let val = self.load_reg(dst);
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let one = self.ins().iconst(ty, 1i64);
                     let new_val = self.ins().iadd(val, one);
                     self.store_reg(dst, new_val);
@@ -621,8 +627,11 @@ impl<'a> EmitCtx<'a> {
                     let mut data = DataDescription::new();
                     data.define_zeroinit(size_of::<crate::sys::vclosure>());
 
-                    let ty_id = self.m.declare_data_in_data(self.idxs.types[self.idxs.fn_type_map[&fid].0], &mut data);
-                    data.write_data_addr(0  , ty_id, 0);
+                    let ty_id = self.m.declare_data_in_data(
+                        self.idxs.types[self.idxs.fn_type_map[&fid].0],
+                        &mut data,
+                    );
+                    data.write_data_addr(0, ty_id, 0);
                     let fn_id = self.m.declare_func_in_data(func_id, &mut data);
                     data.write_function_addr(8, fn_id);
 
@@ -684,7 +693,7 @@ impl<'a> EmitCtx<'a> {
                         .m
                         .declare_data_in_func(self.idxs.globals[idx], self.builder.func);
                     let val = self.ins().symbol_value(types::I64, global_value);
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
                     self.store_reg(dst, val);
                 }
@@ -703,7 +712,7 @@ impl<'a> EmitCtx<'a> {
                                 .lookup_field_offset(self.fun[*obj], fid.0 as usize)
                                 .unwrap();
                             let obj = self.load_reg(obj);
-                            let ty = self.reg_type(dst).cranelift_type();
+                            let ty = self.reg_cl_ty(dst);
                             let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
                             self.store_reg(dst, val);
                         }
@@ -728,7 +737,7 @@ impl<'a> EmitCtx<'a> {
                             self.emit_brif(
                                 field_addr,
                                 |this| {
-                                    let ty = this.reg_type(dst).cranelift_type();
+                                    let ty = this.reg_cl_ty(dst);
                                     let val = this.ins().load(ty, MemFlags::new(), field_addr, 0);
                                     this.store_reg(dst, val);
                                 },
@@ -784,7 +793,7 @@ impl<'a> EmitCtx<'a> {
                         .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
                         .unwrap();
                     let obj = self.load_reg(&Reg(0));
-                    let ty = self.code[self.fun[*dst]].cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
                     self.store_reg(dst, val);
                 }
@@ -913,8 +922,8 @@ impl<'a> EmitCtx<'a> {
                     }
                 },
                 OpCode::ToSFloat { dst, val } => {
-                    let src_ty = self.reg_type(val).cranelift_type();
-                    let dst_ty = self.reg_type(dst).cranelift_type();
+                    let src_ty = self.reg_cl_ty(val);
+                    let dst_ty = self.reg_cl_ty(dst);
                     let val = self.load_reg(val);
                     let val = match (src_ty, dst_ty) {
                         (types::F32, types::F64) => self.ins().fpromote(types::F64, val),
@@ -928,13 +937,13 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::ToUFloat { dst, val } => {
                     let val = self.load_reg(val);
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let val = self.builder.ins().fcvt_from_uint(ty, val);
                     self.store_reg(dst, val)
                 }
                 OpCode::ToInt { dst, val } => {
-                    let src_ty = self.reg_type(val).cranelift_type();
-                    let dst_ty = self.reg_type(dst).cranelift_type();
+                    let src_ty = self.reg_cl_ty(val);
+                    let dst_ty = self.reg_cl_ty(dst);
                     let val = self.load_reg(val);
                     let val = if src_ty.is_int() && dst_ty.is_int() {
                         match src_ty.bits().cmp(&dst_ty.bits()) {
@@ -1054,12 +1063,12 @@ impl<'a> EmitCtx<'a> {
                     let offset = self.load_reg(offset);
                     let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let val = self.ins().load(ty, MemFlags::new(), ptr, 0);
                     self.store_reg(dst, val);
                 }
                 OpCode::GetArray { dst, mem, offset } => {
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
 
                     let arr_addr = self.load_reg(mem);
                     let offset = self.load_reg(offset);
@@ -1095,7 +1104,7 @@ impl<'a> EmitCtx<'a> {
                     self.ins().store(MemFlags::new(), val, ptr, 0);
                 }
                 OpCode::SetArray { mem, offset, val } => {
-                    let ty = self.reg_type(val).cranelift_type();
+                    let ty = self.reg_cl_ty(val);
 
                     let arr_addr = self.load_reg(mem);
                     let offset = self.load_reg(offset);
@@ -1174,7 +1183,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Unref { dst, r } => {
                     let addr = self.load_reg(r);
                     let ty = match self.reg_type(r) {
-                        HLType::Reference(t) => self.code[*t].cranelift_type(),
+                        HLType::Reference(t) => super::cranelift_type(&self.code[*t]),
                         _ => panic!(),
                     };
                     let val = self.ins().load(ty, MemFlags::trusted(), addr, 0);
@@ -1232,7 +1241,7 @@ impl<'a> EmitCtx<'a> {
                         construct_idx.0 as usize,
                         field_idx.0 as usize,
                     );
-                    let dst_ty = self.reg_type(dst).cranelift_type();
+                    let dst_ty = self.reg_cl_ty(dst);
                     let obj_val = self.load_reg(obj);
                     let val = self
                         .ins()
@@ -1264,7 +1273,7 @@ impl<'a> EmitCtx<'a> {
                     _ => panic!("ORefData only supports arrays"),
                 },
                 OpCode::RefOffset { dst, r, off } => {
-                    let ty = self.reg_type(dst).cranelift_type();
+                    let ty = self.reg_cl_ty(dst);
                     let r = self.load_reg(r);
                     let off = self.load_reg(off);
                     let off = self.ins().imul_imm(off, ty.bytes() as i64);
@@ -1434,9 +1443,9 @@ impl<'a> EmitCtx<'a> {
 
     pub fn emit_jump(
         &mut self,
-        a: &crate::opcode::Reg,
-        b: &crate::opcode::Reg,
-        offset: &crate::opcode::Idx,
+        a: &hl_code::opcode::Reg,
+        b: &hl_code::opcode::Reg,
+        offset: &hl_code::opcode::Idx,
         int_cc: IntCC,
         float_cc: Option<FloatCC>,
     ) {
@@ -1593,7 +1602,7 @@ impl<'a> EmitCtx<'a> {
                         if dst_type.is_ptr() {
                             this.store_reg(dst, ret_val);
                         } else if let Some(slot) = slot {
-                            let ty = this.reg_type(dst).cranelift_type();
+                            let ty = this.reg_cl_ty(dst);
                             let val =
                                 this.ins()
                                     .stack_load(ty, slot, offset_of!(vdynamic, v) as i32);

@@ -475,6 +475,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hl-code"
+version = "0.1.0"
+
+[[package]]
 name = "hl-jit"
 version = "0.1.0"
 dependencies = [
@@ -483,6 +487,7 @@ dependencies = [
  "cc",
  "clap",
  "cranelift",
+ "hl-code",
  "libloading",
 ]
 

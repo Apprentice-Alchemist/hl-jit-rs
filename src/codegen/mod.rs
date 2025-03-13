@@ -280,7 +280,7 @@ fn fill_signature(code: &Code, sig: &mut Signature, args: &[TypeIdx], ret: TypeI
         args.iter()
             .filter_map(|idx| {
                 if !code[*idx].is_void() {
-                    let clir_ty = code[*idx].cranelift_type();
+                    let clir_ty = cranelift_type(&code[*idx]);
                     Some(AbiParam::new(clir_ty))
                 } else {
                     None
@@ -289,6 +289,36 @@ fn fill_signature(code: &Code, sig: &mut Signature, args: &[TypeIdx], ret: TypeI
     );
     let ret_ty = &code[ret];
     if !ret_ty.is_void() {
-        sig.returns.push(AbiParam::new(ret_ty.cranelift_type()));
+        sig.returns.push(AbiParam::new(cranelift_type(ret_ty)));
+    }
+}
+
+pub fn cranelift_type(ty: &HLType) -> cranelift::prelude::Type {
+    use cranelift::prelude::types;
+    match ty {
+        HLType::Void => panic!("HVOID should not be used in CLIR"),
+        HLType::UInt8 => types::I8,
+        HLType::UInt16 => types::I16,
+        HLType::Int32 => types::I32,
+        HLType::Int64 => types::I64,
+        HLType::Float32 => types::F32,
+        HLType::Float64 => types::F64,
+        HLType::Boolean => types::I8,
+        HLType::Bytes => types::I64,
+        HLType::Dynamic => types::I64,
+        HLType::Function(_) => types::I64,
+        HLType::Object(_) => types::I64,
+        HLType::Array => types::I64,
+        HLType::Type => types::I64,
+        HLType::Reference(_) => types::I64,
+        HLType::Virtual(_) => types::I64,
+        HLType::Dynobj => types::I64,
+        HLType::Abstract(_) => types::I64,
+        HLType::Enum(_) => types::I64,
+        HLType::Null(_) => types::I64,
+        HLType::Method(_) => types::I64,
+        HLType::Struct(_) => types::I64,
+        HLType::Packed(_) => panic!("HPACKED should not be used in CLIR"),
+        HLType::Guid => types::I64,
     }
 }
