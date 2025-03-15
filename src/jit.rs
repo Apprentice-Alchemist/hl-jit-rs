@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt::{Display, Write}};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Write},
+};
 
 use cranelift::{
     jit::{JITBuilder, JITModule},
@@ -9,7 +12,14 @@ use libloading::Library;
 use crate::{codegen::CodegenCtx, sys::hl_type};
 
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
-    let mut jit_b = JITBuilder::new(cranelift::module::default_libcall_names()).unwrap();
+    let mut jit_b = JITBuilder::with_flags(
+        &[
+            // This speeds up compilation by a lot
+            ("regalloc_algorithm", "single_pass"),
+        ],
+        cranelift::module::default_libcall_names(),
+    )
+    .unwrap();
     let mut libs: HashMap<String, &mut Library> = HashMap::new();
     for (lib, name, _, _) in &code.natives {
         let (libname, libfile) = match &code[*lib] {

@@ -1,5 +1,6 @@
 use virtue::prelude::*;
 
+/// Derive macro generating an impl of the trait `hl_code::reader::Readable`
 /// Use with care, in particular when Vecs are involved
 #[proc_macro_derive(Readable)]
 pub fn derive(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {

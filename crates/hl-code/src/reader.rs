@@ -1,12 +1,11 @@
 use std::{
-    collections::BTreeMap,
     fs::File,
     io::{self, BufReader, ErrorKind, Read},
     path::Path,
 };
 
 use crate::{
-    Code, GlobalIdx, HLFunction, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx,
+    Code, GlobalIdx, HLFunction, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx,
 };
 
 pub struct Reader(BufReader<File>);
@@ -323,14 +322,20 @@ impl Readable for Code {
             let mut bytes = Vec::new();
             bytes.resize(size, 0);
             r.read_exact(&mut bytes)?;
-            let mut cursor = std::io::Cursor::new(buf);
+            let mut cursor = std::io::Cursor::new(bytes);
             let mut bytes_vec = Vec::with_capacity(nbytes);
-            for _ in 0..nbytes {
-                let sz = r.udx()?;
-                let mut buf = vec![0; sz];
-                cursor.read_exact(&mut buf)?;
+            let mut pos = r.udx()?;
+            assert_eq!(pos, 0);
+            for i in 0..nbytes - 1 {
+                let new_pos = r.udx()?;
+                let mut buf = vec![0; new_pos - pos];
+                cursor.read_exact(&mut buf).unwrap();
                 bytes_vec.push(buf.into_boxed_slice());
+                pos = new_pos;
             }
+            let mut v = Vec::new();
+            cursor.read_to_end(&mut v).unwrap();
+            bytes_vec.push(v.into_boxed_slice());
             Some(bytes_vec)
         } else {
             None
@@ -436,7 +441,7 @@ impl Readable for Code {
             globals,
             natives,
             functions,
-            constants: BTreeMap::from_iter(constants.into_iter()),
+            constants: <_>::from_iter(constants.into_iter()),
             entrypoint,
         })
     }

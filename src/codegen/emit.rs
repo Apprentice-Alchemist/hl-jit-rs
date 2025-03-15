@@ -10,7 +10,7 @@ use cranelift::{codegen::ir::StackSlot, module::Module};
 use hl_code::FunIdx;
 
 use crate::code::TypeFun;
-use crate::sys::{vclosure, vdynamic, venum};
+use crate::sys::{hl_thread_info, hl_trap_ctx, vclosure, vdynamic, venum};
 use crate::{
     code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx},
     sys::{hl_type, varray, vvirtual},
@@ -755,10 +755,12 @@ impl<'a> EmitCtx<'a> {
 
                         let obj_val = self.load_reg(obj);
                         let val_val = self.load_reg(val);
-                        let field_addr = self.ins().iadd_imm(
+                        let field_addr = self.ins().load(
+                            types::I64,
+                            MemFlags::new(),
                             obj_val,
-                            size_of::<vvirtual>() as i64
-                                + (fid.0 as usize * size_of::<usize>()) as i64,
+                            size_of::<vvirtual>() as i32
+                                + (fid.0 as usize * size_of::<usize>()) as i32,
                         );
 
                         let next_block = self.next_block();
@@ -1022,12 +1024,67 @@ impl<'a> EmitCtx<'a> {
                     self.switch_to_block(next_block);
                 }
                 OpCode::Trap { dst, jump_off } => {
-                    self.block_for_offset(jump_off);
-                    self.ins().nop();
+                    //  #define hl_trap(ctx,r,label) {
+                    //      hl_thread_info *__tinf = hl_get_thread();
+                    //      ctx.tcheck = NULL;
+                    //      ctx.prev = __tinf->trap_current;
+                    //      __tinf->trap_current = &ctx;
+                    //      if( setjmp(ctx.buf) ) {
+                    //          r = __tinf->exc_value;
+                    //          goto label;
+                    //      }
+                    //  }
+
+                    let slot = self.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size_of::<hl_trap_ctx>() as u32,
+                        3,
+                    ));
+                    let zero = self.ins().iconst(types::I64, 0);
+                    self.ins().stack_store(zero, slot, offset_of!(hl_trap_ctx, tcheck) as i32);
+
+                    let tinf = {
+                        let f = self.native_fun("hl_get_thread");
+                        let inst = self
+                            .builder
+                            .ins()
+                            .call(f, &[]);
+                        self.inst_results(inst)[0]
+                    };
+
+                    let trap_current = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
+                    self.ins().stack_store(trap_current, slot, offset_of!(hl_trap_ctx, prev) as i32);
+                    let ctx_addr = self.ins().stack_addr(types::I64, slot, 0);
+                    self.ins().store(MemFlags::trusted(), ctx_addr, tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
+
+                    let env = self.ins().stack_addr(types::I64, slot, offset_of!(hl_trap_ctx, buf) as i32);
+                    let next_block = self.next_block();
+                    let exc_block = self.create_block();
+                    self.ins().setjmp(env, next_block, &[], exc_block, &[]);
+
+                    self.switch_to_block(exc_block);
+                    let exc_value = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(hl_thread_info, exc_value) as i32);
+                    self.store_reg(dst, exc_value);
+
+                    let catch_block = self.block_for_offset(jump_off);
+                    self.ins().jump(catch_block, &[]);
+                    self.seal_block(exc_block);
+
+                    self.switch_to_block(next_block);
                 }
                 OpCode::EndTrap { something } => {
-                    self.ins().nop();
-                    // self.block_for_offset(something);
+                    // #define hl_endtrap(ctx)	hl_get_thread()->trap_current = ctx.prev
+                    let tinf = {
+                        let f = self.native_fun("hl_get_thread");
+                        let inst = self
+                            .builder
+                            .ins()
+                            .call(f, &[]);
+                        self.inst_results(inst)[0]
+                    };
+                    let trap_current = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
+                    let trap_prev = self.ins().load(types::I64, MemFlags::trusted(), trap_current, offset_of!(hl_trap_ctx, prev) as i32);
+                    self.ins().store(MemFlags::trusted(), trap_prev, tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);

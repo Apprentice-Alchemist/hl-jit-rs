@@ -99,6 +99,7 @@ static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ),
     ("hl_assert", &[], &[]),
     ("hl_null_access", &[], &[]),
+    ("hl_get_thread", &[], &[types::I64]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {

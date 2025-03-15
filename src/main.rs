@@ -3,10 +3,10 @@ use clap::Parser;
 use cranelift::jit::{JITBuilder, JITModule};
 use std::{
     error::Error,
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{c_int, c_void, CStr, CString},
     process::abort,
     ptr::{null, null_mut},
-    str::FromStr,
+    str::FromStr, time::Instant,
 };
 use sys::{hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HFUN, vclosure, vdynamic};
 
@@ -88,14 +88,16 @@ extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = Args::parse();
-    let code = hl_code::Code::from_file(&args.file)?;
-
+    let code = hl_code::Code::from_file(&args.file).unwrap();
+    println!("parsing done");
     if let Some(ref output) = args.output {
         let product = crate::object::compile_module(code);
         let bytes = product.emit()?;
         std::fs::write(output, bytes);
     } else {
+        let start = Instant::now();
         let (m, entrypoint) = crate::jit::compile_module(code);
+        println!("compiling done in {:?}", start.elapsed());
         unsafe extern "C" {
             unsafe fn hlc_static_call(
                 fun: *mut c_void,

@@ -10,7 +10,12 @@ license = "Apache-2.0 WITH LLVM-exception"
 [dependencies]
 backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
-cranelift = { version = "0.117.2", features = ["jit", "module", "native", "object"] }
+cranelift = { git = "https://github.com/Apprentice-Alchemist/wasmtime.git", branch = "feature/setjmp", features = [
+	"jit",
+	"module",
+	"native",
+	"object",
+] }
 libloading = "0.8.6"
 hl-code = { path = "crates/hl-code" }
 
