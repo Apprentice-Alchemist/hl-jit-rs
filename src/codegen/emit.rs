@@ -147,11 +147,6 @@ impl<'a> EmitCtx<'a> {
         self.ins().stack_addr(types::I64, slot, 0)
     }
 
-    fn trap(&mut self, code: &OpCode) {
-        let value = self.ins().iconst(types::I64, 0);
-        self.ins().debugtrap();
-    }
-
     fn lookup_enum_offset(&mut self, ty: TypeIdx, construct_idx: usize, field_idx: usize) -> u32 {
         if let Some(offsets) = self.enum_offsets.get(&(ty, construct_idx)) {
             return offsets[field_idx];
@@ -450,7 +445,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Not { dst, val } => {
                     let val = self.load_reg(val);
-                    let val = self.ins().bnot(val);
+                    let val = self.ins().bxor(val, val);
                     self.store_reg(dst, val);
                 }
                 OpCode::Incr { dst } => {
@@ -463,7 +458,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Decr { dst } => {
                     let val = self.load_reg(dst);
                     let ty = self.reg_cl_ty(dst);
-                    let one = self.ins().iconst(ty, 1i64);
+                    let one = self.ins().iconst(ty, -1i64);
                     let new_val = self.ins().iadd(val, one);
                     self.store_reg(dst, new_val);
                 }
@@ -842,10 +837,10 @@ impl<'a> EmitCtx<'a> {
                     Some(FloatCC::LessThanOrEqual),
                 ),
                 OpCode::JULt { a, b, offset } => {
-                    self.emit_jump(a, b, offset, IntCC::SignedLessThan, None)
+                    self.emit_jump(a, b, offset, IntCC::UnsignedLessThan, None)
                 }
                 OpCode::JUGte { a, b, offset } => {
-                    self.emit_jump(a, b, offset, IntCC::SignedLessThan, None)
+                    self.emit_jump(a, b, offset, IntCC::UnsignedGreaterThanOrEqual, None)
                 }
                 OpCode::JNotLt { a, b, offset } => self.emit_jump(
                     a,
@@ -1007,7 +1002,7 @@ impl<'a> EmitCtx<'a> {
                     for (val, case) in cases.iter().enumerate() {
                         switch.set_entry(val as u128, self.block_for_offset(case));
                     }
-                    let end_block = self.block_for_offset(end);
+                    let end_block = self.block_for_offset(&Idx(0));
                     switch.emit(self, val_val, end_block);
                     let next_block = self.next_block();
                     self.switch_to_block(next_block);
@@ -1041,29 +1036,50 @@ impl<'a> EmitCtx<'a> {
                         3,
                     ));
                     let zero = self.ins().iconst(types::I64, 0);
-                    self.ins().stack_store(zero, slot, offset_of!(hl_trap_ctx, tcheck) as i32);
+                    self.ins()
+                        .stack_store(zero, slot, offset_of!(hl_trap_ctx, tcheck) as i32);
 
                     let tinf = {
                         let f = self.native_fun("hl_get_thread");
-                        let inst = self
-                            .builder
-                            .ins()
-                            .call(f, &[]);
+                        let inst = self.builder.ins().call(f, &[]);
                         self.inst_results(inst)[0]
                     };
 
-                    let trap_current = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
-                    self.ins().stack_store(trap_current, slot, offset_of!(hl_trap_ctx, prev) as i32);
+                    let trap_current = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        tinf,
+                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                    );
+                    self.ins().stack_store(
+                        trap_current,
+                        slot,
+                        offset_of!(hl_trap_ctx, prev) as i32,
+                    );
                     let ctx_addr = self.ins().stack_addr(types::I64, slot, 0);
-                    self.ins().store(MemFlags::trusted(), ctx_addr, tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
+                    self.ins().store(
+                        MemFlags::trusted(),
+                        ctx_addr,
+                        tinf,
+                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                    );
 
-                    let env = self.ins().stack_addr(types::I64, slot, offset_of!(hl_trap_ctx, buf) as i32);
+                    let env = self.ins().stack_addr(
+                        types::I64,
+                        slot,
+                        offset_of!(hl_trap_ctx, buf) as i32,
+                    );
                     let next_block = self.next_block();
                     let exc_block = self.create_block();
                     self.ins().setjmp(env, next_block, &[], exc_block, &[]);
 
                     self.switch_to_block(exc_block);
-                    let exc_value = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(hl_thread_info, exc_value) as i32);
+                    let exc_value = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        tinf,
+                        offset_of!(hl_thread_info, exc_value) as i32,
+                    );
                     self.store_reg(dst, exc_value);
 
                     let catch_block = self.block_for_offset(jump_off);
@@ -1076,15 +1092,27 @@ impl<'a> EmitCtx<'a> {
                     // #define hl_endtrap(ctx)	hl_get_thread()->trap_current = ctx.prev
                     let tinf = {
                         let f = self.native_fun("hl_get_thread");
-                        let inst = self
-                            .builder
-                            .ins()
-                            .call(f, &[]);
+                        let inst = self.builder.ins().call(f, &[]);
                         self.inst_results(inst)[0]
                     };
-                    let trap_current = self.ins().load(types::I64, MemFlags::trusted(), tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
-                    let trap_prev = self.ins().load(types::I64, MemFlags::trusted(), trap_current, offset_of!(hl_trap_ctx, prev) as i32);
-                    self.ins().store(MemFlags::trusted(), trap_prev, tinf, offset_of!(crate::sys::hl_thread_info, trap_current) as i32);
+                    let trap_current = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        tinf,
+                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                    );
+                    let trap_prev = self.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        trap_current,
+                        offset_of!(hl_trap_ctx, prev) as i32,
+                    );
+                    self.ins().store(
+                        MemFlags::trusted(),
+                        trap_prev,
+                        tinf,
+                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                    );
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
@@ -1116,11 +1144,10 @@ impl<'a> EmitCtx<'a> {
 
                     let arr_addr = self.load_reg(mem);
                     let offset = self.load_reg(offset);
-                    let offset = self.ins().sextend(types::I64, offset);
-                    let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
+                    let offset = self.ins().uextend(types::I64, offset);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
-                    let val_addr = self.ins().iadd(mem_addr, offset);
-                    let val = self.ins().load(ty, MemFlags::trusted(), val_addr, 0);
+                    let val_addr = self.ins().iadd(arr_addr, offset);
+                    let val = self.ins().load(ty, MemFlags::trusted(), val_addr, size_of::<varray>() as i32);
                     self.store_reg(dst, val);
                 }
                 OpCode::SetI8 { mem, offset, val } => {
@@ -1374,7 +1401,15 @@ impl<'a> EmitCtx<'a> {
                 self.ins().call(cast_ref, &[val_addr, src_ty, dst_ty])
             }
         };
-        self.store_reg(dst, self.inst_results(inst)[0]);
+        let dst_val = self.inst_results(inst)[0];
+        let dst_val = match &self.code[self.fun[*dst]] {
+            ty @ (HLType::Boolean | HLType::UInt8 | HLType::UInt16) => self
+                .builder
+                .ins()
+                .ireduce(super::cranelift_type(ty), dst_val),
+            _ => dst_val,
+        };
+        self.store_reg(dst, dst_val);
     }
 
     fn emit_dyn_get(&mut self, dst: &Reg, obj: &Reg, field_name: UStrIdx) {
@@ -1402,6 +1437,13 @@ impl<'a> EmitCtx<'a> {
             }
         };
         let dst_val = self.inst_results(inst)[0];
+        let dst_val = match &self.code[self.fun[*dst]] {
+            ty @ (HLType::Boolean | HLType::UInt8 | HLType::UInt16) => self
+                .builder
+                .ins()
+                .ireduce(super::cranelift_type(ty), dst_val),
+            _ => dst_val,
+        };
         self.store_reg(dst, dst_val);
     }
 
