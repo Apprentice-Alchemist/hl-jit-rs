@@ -360,8 +360,29 @@ impl<'a> EmitCtx<'a> {
                     } else {
                         let a = self.load_reg(a);
                         let b = self.load_reg(b);
+                        let next_block = self.next_block();
+
+                        let div_block = self.create_block();
+
+                        let mul_block = self.create_block();
+
+                        let check_neg_one_block = self.create_block();
+
+                        self.ins().brif(b, check_neg_one_block, &[], mul_block, &[]);
+                        self.seal_block(check_neg_one_block);
+                        self.switch_to_block(check_neg_one_block);
+                        let val = self.ins().icmp_imm(IntCC::NotEqual, b, -1);
+                        self.ins().brif(val, div_block, &[], mul_block, &[]);
+                        self.seal_block(div_block);
+                        self.switch_to_block(div_block);
                         let val = self.ins().sdiv(a, b);
-                        self.store_reg(dst, val)
+                        self.store_reg(dst, val);
+                        self.ins().jump(next_block, &[]);
+                        self.seal_block(mul_block);
+                        self.switch_to_block(mul_block);
+                        let val = self.ins().imul(a, b);
+                        self.store_reg(dst, val);
+                        self.ins().jump(next_block, &[]);
                     }
                 }
                 OpCode::UDiv { dst, a, b } => {
@@ -385,8 +406,31 @@ impl<'a> EmitCtx<'a> {
                     } else {
                         let a = self.load_reg(a);
                         let b = self.load_reg(b);
+                        let next_block = self.next_block();
+
+                        let rem_block = self.create_block();
+
+                        let zero_block = self.create_block();
+
+                        let check_neg_one_block = self.create_block();
+
+                        self.ins()
+                            .brif(b, check_neg_one_block, &[], zero_block, &[]);
+                        self.seal_block(check_neg_one_block);
+                        self.switch_to_block(check_neg_one_block);
+                        let val = self.ins().icmp_imm(IntCC::NotEqual, b, -1);
+                        self.ins().brif(val, rem_block, &[], zero_block, &[]);
+                        self.seal_block(rem_block);
+                        self.switch_to_block(rem_block);
                         let val = self.ins().srem(a, b);
                         self.store_reg(dst, val);
+                        self.ins().jump(next_block, &[]);
+                        self.seal_block(zero_block);
+                        self.switch_to_block(zero_block);
+                        let ty = self.reg_cl_ty(dst);
+                        let val = self.ins().iconst(ty, 0);
+                        self.store_reg(dst, val);
+                        self.ins().jump(next_block, &[]);
                     }
                 }
                 OpCode::UMod { dst, a, b } => {
@@ -462,15 +506,7 @@ impl<'a> EmitCtx<'a> {
                     let new_val = self.ins().iadd(val, one);
                     self.store_reg(dst, new_val);
                 }
-                OpCode::Call0 { dst, f } => {
-                    let f_ref = self
-                        .m
-                        .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
-                    let i = self.ins().call(f_ref, &[]);
-                    if !self.reg_type(dst).is_void() {
-                        self.store_reg(dst, self.builder.inst_results(i)[0]);
-                    }
-                }
+                OpCode::Call0 { dst, f } => self.emit_call(dst, f, &[]),
                 OpCode::Call1 { dst, f, args } => self.emit_call(dst, f, &args[..]),
                 OpCode::Call2 { dst, f, args } => self.emit_call(dst, f, &args[..]),
                 OpCode::Call3 { dst, f, args } => self.emit_call(dst, f, &args[..]),
@@ -1147,7 +1183,12 @@ impl<'a> EmitCtx<'a> {
                     let offset = self.ins().uextend(types::I64, offset);
                     let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
                     let val_addr = self.ins().iadd(arr_addr, offset);
-                    let val = self.ins().load(ty, MemFlags::trusted(), val_addr, size_of::<varray>() as i32);
+                    let val = self.ins().load(
+                        ty,
+                        MemFlags::trusted(),
+                        val_addr,
+                        size_of::<varray>() as i32,
+                    );
                     self.store_reg(dst, val);
                 }
                 OpCode::SetI8 { mem, offset, val } => {
@@ -1683,7 +1724,7 @@ impl<'a> EmitCtx<'a> {
 
                         let ft = this.type_val(field_ty);
                         let hash_val = this.hash(&field_name);
-                        let args = this.ins().stack_addr(types::I64, stack_slot, 1);
+                        let args = this.ins().stack_addr(types::I64, stack_slot, 0);
                         let dst_type = this.reg_type(dst).clone();
                         let (ret, slot) = match &dst_type {
                             HLType::Void => (this.ins().iconst(types::I64, 0), None),
