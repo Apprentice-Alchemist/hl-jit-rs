@@ -490,7 +490,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Not { dst, val } => {
                     let val = self.load_reg(val);
-                    let val = self.ins().bxor(val, val);
+                    let val = self.ins().bxor_imm(val, 1);
                     self.store_reg(dst, val);
                 }
                 OpCode::Incr { dst } => {
