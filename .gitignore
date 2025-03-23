@@ -7,3 +7,6 @@ Main.hx
 /.vscode
 compile_commands.json
 *.hxml
+/.cargo
+profile.json.gz
+main
