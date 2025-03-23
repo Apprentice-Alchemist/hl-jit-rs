@@ -35,6 +35,11 @@ pub fn emit_fun(ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
         .unwrap();
 }
 
+struct ObjLayout {
+    layout: Layout,
+    fields: Vec<(u32, TypeIdx)>,
+}
+
 struct EmitCtx<'a> {
     m: &'a mut dyn Module,
     code: &'a Code,
@@ -44,7 +49,7 @@ struct EmitCtx<'a> {
     blocks: BTreeMap<usize, Block>,
     // position of current HL opcode
     pos: usize,
-    field_offsets: BTreeMap<TypeIdx, Vec<u32>>,
+    obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
     enum_offsets: BTreeMap<(TypeIdx, usize), Vec<u32>>,
     regs: BTreeMap<Reg, (StackSlot, Type)>,
 }
@@ -125,7 +130,7 @@ impl<'a> EmitCtx<'a> {
             builder,
             blocks,
             pos: 0,
-            field_offsets: BTreeMap::new(),
+            obj_layouts: BTreeMap::new(),
             enum_offsets: BTreeMap::new(),
             regs,
         }
@@ -178,14 +183,14 @@ impl<'a> EmitCtx<'a> {
         offset
     }
 
-    fn lookup_field_offset(&mut self, ty: TypeIdx, field_idx: usize) -> Option<u32> {
-        if let Some(offsets) = self.field_offsets.get(&ty) {
-            return Some(offsets[field_idx]);
-        }
+    fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
+        let mut fields = Vec::new();
 
-        let mut offsets = Vec::<u32>::new();
-
-        fn fill_offsets(code: &Code, ty: TypeIdx, offsets: &mut Vec<u32>) -> (usize, Layout) {
+        fn fill_offsets(
+            code: &Code,
+            ty: TypeIdx,
+            offsets: &mut Vec<(u32, TypeIdx)>,
+        ) -> (usize, Layout) {
             let o = code[ty].type_obj().unwrap();
             let (nfields, layout) = if let Some(ty) = o.super_ {
                 fill_offsets(code, ty, offsets)
@@ -206,24 +211,41 @@ impl<'a> EmitCtx<'a> {
                     HLType::UInt8 => Layout::new::<u8>(),
                     HLType::UInt16 => Layout::new::<u16>(),
                     HLType::Int32 => Layout::new::<i32>(),
-                    HLType::Int64 => Layout::new::<i64>(),
+                    HLType::Int64 | HLType::Guid => Layout::new::<i64>(),
                     HLType::Float32 => Layout::new::<f32>(),
                     HLType::Float64 => Layout::new::<f64>(),
                     HLType::Boolean => Layout::new::<bool>(),
-                    _ => Layout::new::<*mut u8>(),
+                    HLType::Packed(ty) => {
+                        // TODO: cache this
+                        EmitCtx::build_obj_layout(code, *ty).layout
+                    }
+                    t => {
+                        assert!(t.is_ptr(), "{t:?} should be a pointer");
+                        Layout::new::<*mut u8>()
+                    }
                 };
                 let (new_layout, offset) = layout.extend(field_layout).unwrap();
                 layout = new_layout;
-                offsets.push(offset.try_into().unwrap());
+                offsets.push((offset.try_into().unwrap(), *type_idx));
             }
 
             (nfields + o.fields.len(), layout)
         }
 
-        let (nfields, size) = fill_offsets(self.code, ty, &mut offsets);
-        let offset = offsets[field_idx];
-        self.field_offsets.insert(ty, offsets);
-        Some(offset)
+        let (nfields, mut layout) = fill_offsets(code, ty, &mut fields);
+        layout = layout.pad_to_align();
+        let l = ObjLayout { layout, fields };
+        l
+    }
+
+    fn get_obj_layout(&mut self, ty: TypeIdx) -> &ObjLayout {
+        self.obj_layouts
+            .entry(ty)
+            .or_insert_with(|| Self::build_obj_layout(self.code, ty))
+    }
+
+    fn lookup_field(&mut self, ty: TypeIdx, field_idx: usize) -> Option<(u32, TypeIdx)> {
+        Some(self.get_obj_layout(ty).fields[field_idx])
     }
 
     pub fn ensure_block(&mut self, pos: usize) -> Block {
@@ -279,10 +301,15 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::Float { dst, idx } => {
-                    let val = self
-                        .builder
-                        .ins()
-                        .f64const(self.code.floats[idx.0 as usize]);
+                    let val = if matches!(self.reg_type(dst), HLType::Float32) {
+                        self.builder
+                            .ins()
+                            .f32const(self.code.floats[idx.0 as usize] as f32)
+                    } else {
+                        self.builder
+                            .ins()
+                            .f64const(self.code.floats[idx.0 as usize])
+                    };
                     self.store_reg(dst, val);
                 }
                 OpCode::Bool { dst, val } => {
@@ -725,106 +752,14 @@ impl<'a> EmitCtx<'a> {
                     self.ins().store(MemFlags::new(), val, global_value, 0);
                 }
                 OpCode::Field { dst, obj, fid } => {
-                    match &self.code[self.fun[*obj]] {
-                        HLType::Struct(_) | HLType::Object(_) => {
-                            let offset = self
-                                .lookup_field_offset(self.fun[*obj], fid.0 as usize)
-                                .unwrap();
-                            let obj = self.load_reg(obj);
-                            let ty = self.reg_cl_ty(dst);
-                            let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
-                            self.store_reg(dst, val);
-                        }
-                        HLType::Virtual(virt) => {
-                            //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
-                            //  if( hl_vfields(obj)[fid] )
-                            //      *hl_vfields(obj)[fid] = val;
-                            //  else
-                            //      hl_dyn_set(obj,hash(field),vt,val)
-
-                            let obj_val = self.load_reg(obj);
-
-                            let field_addr = self.ins().load(
-                                types::I64,
-                                MemFlags::new(),
-                                obj_val,
-                                size_of::<vvirtual>() as i32
-                                    + (fid.0 as usize * size_of::<usize>()) as i32,
-                            );
-
-                            let next_block = self.next_block();
-                            self.emit_brif(
-                                field_addr,
-                                |this| {
-                                    let ty = this.reg_cl_ty(dst);
-                                    let val = this.ins().load(ty, MemFlags::new(), field_addr, 0);
-                                    this.store_reg(dst, val);
-                                },
-                                |this| {
-                                    this.emit_dyn_get(dst, obj, virt.fields[fid.0 as usize].0);
-                                },
-                                next_block,
-                            );
-                        }
-                        _ => panic!(),
-                    }
+                    self.get_field(dst, obj, fid);
                 }
-                OpCode::SetField { obj, fid, val } => match &self.code[self.fun[*obj]] {
-                    HLType::Struct(_) | HLType::Object(_) => {
-                        let offset = self
-                            .lookup_field_offset(self.fun[*obj], fid.0 as usize)
-                            .unwrap();
-                        let val = self.load_reg(val);
-                        let obj = self.load_reg(obj);
-                        self.ins().store(MemFlags::new(), val, obj, offset as i32);
-                    }
-                    HLType::Virtual(virt) => {
-                        //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
-                        //  if( hl_vfields(obj)[fid] )
-                        //      *hl_vfields(obj)[fid] = val;
-                        //  else
-                        //      hl_dyn_set(obj,hash(field),vt,val)
-
-                        let obj_val = self.load_reg(obj);
-                        let val_val = self.load_reg(val);
-                        let field_addr = self.ins().load(
-                            types::I64,
-                            MemFlags::new(),
-                            obj_val,
-                            size_of::<vvirtual>() as i32
-                                + (fid.0 as usize * size_of::<usize>()) as i32,
-                        );
-
-                        let next_block = self.next_block();
-                        self.emit_brif(
-                            field_addr,
-                            |this| {
-                                this.ins().store(MemFlags::new(), val_val, field_addr, 0);
-                            },
-                            |this| {
-                                this.emit_dyn_set(obj, virt.fields[fid.0 as usize].0, val);
-                            },
-                            next_block,
-                        );
-                    }
-                    _ => panic!(),
-                },
+                OpCode::SetField { obj, fid, val } => self.set_field(obj, fid, val),
                 OpCode::GetThis { dst, fid } => {
-                    let offset = self
-                        .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
-                        .unwrap();
-                    let obj = self.load_reg(&Reg(0));
-                    let ty = self.reg_cl_ty(dst);
-                    let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
-                    self.store_reg(dst, val);
+                    self.get_field(dst, &Reg(0), fid);
                 }
                 OpCode::SetThis { fid, val } => {
-                    let offset = self
-                        .lookup_field_offset(self.fun[Reg(0)], fid.0 as usize)
-                        .unwrap();
-                    let val = self.load_reg(val);
-                    let obj = self.load_reg(&Reg(0));
-                    self.ins().store(MemFlags::new(), val, obj, offset as i32);
+                    self.set_field(&Reg(0), fid, val);
                 }
                 OpCode::DynGet { dst, obj, str_idx } => {
                     self.emit_dyn_get(dst, obj, *str_idx);
@@ -1413,6 +1348,126 @@ impl<'a> EmitCtx<'a> {
         self.seal_all_blocks();
     }
 
+    fn set_field(&mut self, obj: &Reg, fid: &Idx, val: &Reg) {
+        match &self.code[self.fun[*obj]] {
+            HLType::Struct(_) | HLType::Object(_) => {
+                let (offset, ft) =
+                    self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
+                let val_val = self.load_reg(val);
+                let obj = self.load_reg(obj);
+                match (self.reg_type(val), &self.code[ft]) {
+                    (HLType::Struct(_), HLType::Packed(packed_ty)) => {
+                        let addr = self.ins().iadd_imm(obj, offset as i64);
+                        let layout = self.get_obj_layout(*packed_ty);
+                        let size = layout.layout.size() as u64;
+                        let dest_align = layout.layout.align() as u8;
+                        let src_align = layout.layout.align() as u8;
+                        let non_overlapping = true;
+                        let target_config = self.m.target_config();
+                        self.emit_small_memory_copy(
+                            target_config,
+                            addr,
+                            val_val,
+                            size,
+                            dest_align,
+                            src_align,
+                            non_overlapping,
+                            MemFlags::trusted(),
+                        );
+                    }
+                    _ => {
+                        self.ins()
+                            .store(MemFlags::new(), val_val, obj, offset as i32);
+                    }
+                }
+            }
+            HLType::Virtual(virt) => {
+                //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
+                //  if( hl_vfields(obj)[fid] )
+                //      *hl_vfields(obj)[fid] = val;
+                //  else
+                //      hl_dyn_set(obj,hash(field),vt,val)
+    
+                let obj_val = self.load_reg(obj);
+                let val_val = self.load_reg(val);
+                let field_addr = self.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    obj_val,
+                    size_of::<vvirtual>() as i32
+                        + (fid.0 as usize * size_of::<usize>()) as i32,
+                );
+    
+                let next_block = self.next_block();
+                self.emit_brif(
+                    field_addr,
+                    |this| {
+                        this.ins().store(MemFlags::new(), val_val, field_addr, 0);
+                    },
+                    |this| {
+                        this.emit_dyn_set(obj, virt.fields[fid.0 as usize].0, val);
+                    },
+                    next_block,
+                );
+            }
+            _ => panic!(),
+        }
+    }
+    
+    fn get_field(&mut self, dst: &Reg, obj: &Reg, fid: &Idx) {
+        match &self.code[self.fun[*obj]] {
+            HLType::Struct(_) | HLType::Object(_) => {
+                let (offset, ft) =
+                    self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
+                let obj = self.load_reg(obj);
+                let ty = self.reg_cl_ty(dst);
+                match (self.reg_type(dst), &self.code[ft]) {
+                    (HLType::Struct(_), HLType::Packed(_)) => {
+                        let val = self.ins().iadd_imm(obj, offset as i64);
+                        self.store_reg(dst, val);
+                    }
+                    _ => {
+                        let val =
+                            self.ins().load(ty, MemFlags::new(), obj, offset as i32);
+                        self.store_reg(dst, val);
+                    }
+                }
+            }
+            HLType::Virtual(virt) => {
+                //  #define hl_vfields(v) ((void**)(((vvirtual*)(v))+1))
+                //  if( hl_vfields(obj)[fid] )
+                //      *hl_vfields(obj)[fid] = val;
+                //  else
+                //      hl_dyn_set(obj,hash(field),vt,val)
+    
+                let obj_val = self.load_reg(obj);
+    
+                let field_addr = self.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    obj_val,
+                    size_of::<vvirtual>() as i32
+                        + (fid.0 as usize * size_of::<usize>()) as i32,
+                );
+    
+                let next_block = self.next_block();
+                self.emit_brif(
+                    field_addr,
+                    |this| {
+                        let ty = this.reg_cl_ty(dst);
+                        let val = this.ins().load(ty, MemFlags::new(), field_addr, 0);
+                        this.store_reg(dst, val);
+                    },
+                    |this| {
+                        this.emit_dyn_get(dst, obj, virt.fields[fid.0 as usize].0);
+                    },
+                    next_block,
+                );
+            }
+            _ => panic!(),
+        }
+    }
+    
     fn emit_call(&mut self, dst: &Reg, f: &FunIdx, args: &[Reg]) {
         let f_ref = self
             .m
@@ -1629,7 +1684,7 @@ impl<'a> EmitCtx<'a> {
                 (a_val, a_ty, b_val, b_ty)
             }
             (a_ty @ HLType::Object(obj), b_ty @ HLType::Object(_)) => {
-                if let Some(fun_idx) = obj.lookup_field("__compare", self.code) {
+                if let Some(fun_idx) = obj.lookup_proto("__compare", self.code) {
                     self.handle_nulls(
                         int_cc,
                         block_then_label,

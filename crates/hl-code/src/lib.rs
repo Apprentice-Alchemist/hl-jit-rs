@@ -29,7 +29,7 @@ pub struct TypeObj {
 }
 
 impl TypeObj {
-    pub fn lookup_field(&self, name: &str, code: &Code) -> Option<FunIdx> {
+    pub fn lookup_proto(&self, name: &str, code: &Code) -> Option<FunIdx> {
         for (p_name, f, _) in &self.protos {
             let p_name = &code[StrIdx(p_name.0)];
             if p_name == name {
@@ -37,7 +37,7 @@ impl TypeObj {
             }
         }
 
-        self.super_.map(|s| code[s].type_obj().unwrap().lookup_field(name, code)).flatten()
+        self.super_.map(|s| code[s].type_obj().unwrap().lookup_proto(name, code)).flatten()
     }
 }
 

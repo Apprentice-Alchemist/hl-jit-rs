@@ -101,7 +101,7 @@ static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_null_access", &[], &[]),
     ("hl_get_thread", &[], &[types::I64]),
     ("hl_dyn_compare", &[types::I64, types::I64], &[types::I32]),
-    ("hl_same_type", &[types::I64, types::I64], &[types::I32])
+    ("hl_same_type", &[types::I64, types::I64], &[types::I8])
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
