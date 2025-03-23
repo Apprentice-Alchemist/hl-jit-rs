@@ -1699,9 +1699,40 @@ impl<'a> EmitCtx<'a> {
                     b_val_orig,
                     offset_of!(vvirtual, value) as i32,
                 );
+                match int_cc {
+                    IntCC::Equal => {
+                        let a_is_null = self.ins().icmp_imm(IntCC::Equal, val_a, 0);
+                        let b_is_null = self.ins().icmp_imm(IntCC::Equal, val_b, 0);
+                        let next_block = self.create_block();
+                        self.ins()
+                            .brif(a_is_null, block_else_label, &[], next_block, &[]);
+                        self.seal_block(next_block);
+                        self.switch_to_block(next_block);
+                        let next_block = self.create_block();
+                        self.ins()
+                            .brif(b_is_null, block_else_label, &[], next_block, &[]);
+                        self.seal_block(next_block);
+                        self.switch_to_block(next_block);
+                    }
+                    IntCC::NotEqual => {
+                        let a_is_null = self.ins().icmp_imm(IntCC::Equal, val_a, 0);
+                        let b_is_null = self.ins().icmp_imm(IntCC::Equal, val_b, 0);
+                        let next_block = self.create_block();
+                        self.ins()
+                            .brif(a_is_null, block_then_label, &[], next_block, &[]);
+                        self.seal_block(next_block);
+                        self.switch_to_block(next_block);
+                        let next_block = self.create_block();
+                        self.ins()
+                            .brif(b_is_null, block_then_label, &[], next_block, &[]);
+                        self.seal_block(next_block);
+                        self.switch_to_block(next_block);
+                    }
+                    _ => panic!(),
+                }
                 let mut val = self.ins().icmp(int_cc, val_a, val_b);
                 self.ins()
-                    .brif(val, block_else_label, &[], block_then_label, &[]);
+                    .brif(val, block_then_label, &[], block_else_label, &[]);
                 self.switch_to_block(block_else_label);
                 return;
             }
