@@ -100,6 +100,7 @@ static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_assert", &[], &[]),
     ("hl_null_access", &[], &[]),
     ("hl_get_thread", &[], &[types::I64]),
+    ("hl_dyn_compare", &[types::I64, types::I64], &[types::I32])
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -162,12 +163,11 @@ impl<'a> CodegenCtx<'a> {
         }
         for (lib, name, ty, fun_idx) in &code.natives {
             let lib = match &code[*lib] {
-                "std\0" => "hl",
-                "?std\0" => "hl",
-                val => &val[0..val.len() - 1],
+                "std" => "hl",
+                "?std" => "hl",
+                val => if val.starts_with('?') { &val[1..] } else { val },
             };
             let name = &code[*name];
-            let name = &name[0..name.len() - 1];
 
             let symbol_name = format!("{lib}_{name}");
             let mut signature = self.m.make_signature();

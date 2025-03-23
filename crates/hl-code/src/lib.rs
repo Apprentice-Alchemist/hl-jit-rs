@@ -1,12 +1,7 @@
 mod opcode;
 mod reader;
 
-use std::{
-    collections::BTreeMap,
-    io,
-    ops::Index,
-    path::Path,
-};
+use std::{collections::BTreeMap, io, ops::Index, path::Path};
 
 use hl_code_derive::Readable;
 
@@ -31,6 +26,19 @@ pub struct TypeObj {
     pub fields: Vec<(UStrIdx, TypeIdx)>,
     pub protos: Vec<(UStrIdx, FunIdx, Idx)>,
     pub bindings: Vec<(usize, usize)>,
+}
+
+impl TypeObj {
+    pub fn lookup_field(&self, name: &str, code: &Code) -> Option<FunIdx> {
+        for (p_name, f, _) in &self.protos {
+            let p_name = &code[StrIdx(p_name.0)];
+            if p_name == name {
+                return Some(*f);
+            }
+        }
+
+        self.super_.map(|s| code[s].type_obj().unwrap().lookup_field(name, code)).flatten()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -223,7 +231,8 @@ impl Index<StrIdx> for Code {
     type Output = str;
 
     fn index(&self, idx: StrIdx) -> &Self::Output {
-        &self.strings[idx.0]
+        let s = &self.strings[idx.0];
+        &s[0..s.len() - 1]
     }
 }
 impl Index<GlobalIdx> for Code {

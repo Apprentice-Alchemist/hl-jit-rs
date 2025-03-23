@@ -10,6 +10,7 @@ use cranelift::{codegen::ir::StackSlot, module::Module};
 use hl_code::FunIdx;
 
 use crate::code::TypeFun;
+use crate::codegen::cranelift_type;
 use crate::sys::{hl_thread_info, hl_trap_ctx, vclosure, vdynamic, venum};
 use crate::{
     code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx},
@@ -883,10 +884,10 @@ impl<'a> EmitCtx<'a> {
                     b,
                     offset,
                     IntCC::SignedGreaterThanOrEqual,
-                    Some(FloatCC::GreaterThanOrEqual),
+                    Some(FloatCC::UnorderedOrGreaterThanOrEqual),
                 ),
                 OpCode::JNotGte { a, b, offset } => {
-                    self.emit_jump(a, b, offset, IntCC::SignedLessThan, Some(FloatCC::LessThan))
+                    self.emit_jump(a, b, offset, IntCC::SignedLessThan, Some(FloatCC::UnorderedOrLessThan))
                 }
                 OpCode::JEq { a, b, offset } => {
                     self.emit_jump(a, b, offset, IntCC::Equal, Some(FloatCC::Equal))
@@ -1163,7 +1164,7 @@ impl<'a> EmitCtx<'a> {
                     let offset = self.load_reg(offset);
                     let offset = self.ins().sextend(types::I64, offset);
                     let ptr = self.ins().iadd(mem, offset);
-                    let val = self.ins().uload8(types::I32, MemFlags::new(), ptr, 0);
+                    let val = self.ins().uload16(types::I32, MemFlags::new(), ptr, 0);
                     self.store_reg(dst, val);
                 }
                 OpCode::GetMem { dst, mem, offset } => {
@@ -1592,25 +1593,139 @@ impl<'a> EmitCtx<'a> {
     ) {
         let block_then_label = self.block_for_offset(offset);
         let block_else_label = self.next_block();
-        let a_ty = self.reg_type(a);
-        let b_ty = self.reg_type(b);
+        let a_val_orig = self.load_reg(a);
+        let b_val_orig = self.load_reg(b);
+        let (a_val, a_ty, b_val, b_ty) = match (self.reg_type(a), self.reg_type(b)) {
+            (HLType::Null(inner_a), HLType::Null(inner_b)) => {
+                assert_eq!(inner_a, inner_b);
+                let a_ty = &self.code[*inner_a];
+                let b_ty = &self.code[*inner_b];
+
+                self.handle_nulls(int_cc, block_then_label, block_else_label, a_val_orig, b_val_orig);
+
+                let a_val = self.ins().load(
+                    cranelift_type(a_ty),
+                    MemFlags::trusted(),
+                    a_val_orig,
+                    offset_of!(vdynamic, v) as i32,
+                );
+                let b_val = self.ins().load(
+                    cranelift_type(b_ty),
+                    MemFlags::trusted(),
+                    b_val_orig,
+                    offset_of!(vdynamic, v) as i32,
+                );
+
+                (a_val, a_ty, b_val, b_ty)
+            }
+            (a_ty @ HLType::Object(obj), b_ty @ HLType::Object(_)) => {
+                if let Some(fun_idx) = obj.lookup_field("__compare", self.code) {
+                    self.handle_nulls(int_cc, block_then_label, block_else_label, a_val_orig, b_val_orig);
+                    let f_ref = self
+                        .m
+                        .declare_func_in_func(self.idxs.fn_map[&fun_idx], self.builder.func);
+                    let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
+                    let cmp_val = self.inst_results(inst)[0];
+                    let val = self.ins().icmp_imm(int_cc, cmp_val, 0);
+                    self.ins()
+                        .brif(val, block_then_label, &[], block_else_label, &[]);
+                    self.switch_to_block(block_else_label);
+                    return;
+                } else {
+                    (a_val_orig, a_ty, b_val_orig, b_ty)
+                }
+            }
+            (HLType::Dynamic | HLType::Function(_), _) | (_, HLType::Dynamic | HLType::Function(_)) => {
+                let f_ref = self.native_fun("hl_dyn_compare");
+                let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
+                let ret = self.inst_results(inst)[0];
+                let mut val = self.ins().icmp_imm(int_cc, ret, 0);
+                if matches!(int_cc, IntCC::SignedGreaterThan | IntCC::SignedGreaterThanOrEqual) {
+                    let is_invalid = self.ins().icmp_imm(IntCC::NotEqual, ret, 0xAABBCCDD);
+                    val = self.ins().band(val, is_invalid);
+                }
+                self.ins().brif(val, block_then_label, &[], block_else_label, &[]);
+                self.switch_to_block(block_else_label);
+                return;
+            }
+            (a_ty, b_ty) => (a_val_orig, a_ty, b_val_orig, b_ty),
+        };
         let val = if a_ty.is_float() {
             assert!(b_ty.is_float());
             let Some(float_cc) = float_cc else {
                 panic!("unsupported float comparison")
             };
-            let a = self.load_reg(a);
-            let b = self.load_reg(b);
-            self.ins().fcmp(float_cc, a, b)
+            self.ins().fcmp(float_cc, a_val, b_val)
         } else {
             assert!(!b_ty.is_float());
-            let a = self.load_reg(a);
-            let b = self.load_reg(b);
-            self.ins().icmp(int_cc, a, b)
+            self.ins().icmp(int_cc, a_val, b_val)
         };
         self.ins()
             .brif(val, block_then_label, &[], block_else_label, &[]);
         self.switch_to_block(block_else_label);
+    }
+
+    fn handle_nulls(
+        &mut self,
+        int_cc: IntCC,
+        block_then_label: Block,
+        block_else_label: Block,
+        a_val: Value,
+        b_val: Value,
+    ) {
+        match int_cc {
+            IntCC::Equal => {
+                let v = self.ins().icmp(IntCC::Equal, a_val, b_val);
+                let next_block = self.create_block();
+                self.ins().brif(v, block_then_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+                let a_is_null = self.ins().icmp_imm(IntCC::Equal, a_val, 0);
+                let b_is_null = self.ins().icmp_imm(IntCC::Equal, b_val, 0);
+                let next_block = self.create_block();
+                self.ins().brif(a_is_null, block_else_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+                let next_block = self.create_block();
+                self.ins()
+                    .brif(b_is_null, block_else_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+            }
+            IntCC::NotEqual => {
+                let v = self.ins().icmp(IntCC::Equal, a_val, b_val);
+                let next_block = self.create_block();
+                self.ins().brif(v, block_else_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+                let a_is_null = self.ins().icmp_imm(IntCC::Equal, a_val, 0);
+                let b_is_null = self.ins().icmp_imm(IntCC::Equal, b_val, 0);
+                let next_block = self.create_block();
+                self.ins()
+                    .brif(a_is_null, block_then_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+                let next_block = self.create_block();
+                self.ins()
+                    .brif(b_is_null, block_then_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+            }
+            _ => {
+                let next_block = self.create_block();
+                let a_is_null = self.ins().icmp_imm(IntCC::Equal, a_val, 0);
+                self.ins()
+                    .brif(a_is_null, block_else_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+                let next_block = self.create_block();
+                let b_is_null = self.ins().icmp_imm(IntCC::Equal, b_val, 0);
+                self.ins()
+                    .brif(b_is_null, block_else_label, &[], next_block, &[]);
+                self.seal_block(next_block);
+                self.switch_to_block(next_block);
+            }
+        };
     }
 
     fn emit_method_call(&mut self, dst: &Reg, fid: Idx, this_arg: Reg, args: &[Reg]) {

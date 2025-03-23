@@ -22,22 +22,17 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     .unwrap();
     let mut libs: HashMap<String, &mut Library> = HashMap::new();
     for (lib, name, _, _) in &code.natives {
-        let (libname, libfile) = match &code[*lib] {
-            "std\0" => ("hl", "/usr/local/lib/libhl.so".to_string()),
-            "?std\0" => ("hl", "/usr/local/lib/libhl.so".to_string()),
-            "builtin\0" => continue,
-            val => (
-                &val[0..val.len() - 1],
-                format!("/usr/local/lib/{}.hdll", &val[0..val.len() - 1]),
-            ),
+        let (libname, libfile, optional) = match &code[*lib] {
+            "std" => ("hl", "/usr/local/lib/libhl.so".to_string(), false),
+            "?std" => ("hl", "/usr/local/lib/libhl.so".to_string(), true),
+            "builtin" => continue,
+            val => {
+                let optional = val.starts_with('?');
+                let val = if optional { &val[1..] } else { val };
+                (val, format!("/usr/local/lib/{}.hdll", val), optional)
+            }
         };
         let name = &code[*name];
-        let name = &name[0..name.len() - 1];
-        let (name, optional) = if name.starts_with('?') {
-            (&name[1..], true)
-        } else {
-            (name, false)
-        };
         let symbol_name = format!("{libname}_{name}");
         let symbol = unsafe {
             libs.entry(libfile)
