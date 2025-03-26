@@ -326,7 +326,7 @@ impl Readable for Code {
             let mut bytes_vec = Vec::with_capacity(nbytes);
             let mut pos = r.udx()?;
             assert_eq!(pos, 0);
-            for i in 0..nbytes - 1 {
+            for _ in 0..nbytes - 1 {
                 let new_pos = r.udx()?;
                 let mut buf = vec![0; new_pos - pos];
                 cursor.read_exact(&mut buf).unwrap();
