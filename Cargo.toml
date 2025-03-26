@@ -10,7 +10,7 @@ license = "Apache-2.0 WITH LLVM-exception"
 [dependencies]
 backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
-cranelift = { git = "https://github.com/Apprentice-Alchemist/wasmtime.git", branch = "feature/setjmp", features = [
+cranelift = { version = "0.118.0", features = [
 	"jit",
 	"module",
 	"native",

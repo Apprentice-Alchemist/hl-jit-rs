@@ -23,16 +23,21 @@ pub fn emit_fun(ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
     let mut emit_ctx = EmitCtx::new(ctx, code, fun);
     emit_ctx.translate_body();
     emit_ctx.finish();
-    if let Err(e) = ctx.ctx.verify(ctx.m.isa()) {
-        eprintln!(
-            "{}",
-            cranelift::codegen::print_errors::pretty_verifier_error(&ctx.ctx.func, None, e)
-        );
-        std::process::exit(1);
-    }
-    ctx.m
+    if let Err(e) = ctx
+        .m
         .define_function(ctx.idxs.fn_map[&fun.idx], &mut ctx.ctx)
-        .unwrap();
+    {
+        match e {
+            cranelift::module::ModuleError::Compilation(e) => {
+                eprintln!(
+                    "{}",
+                    cranelift::codegen::print_errors::pretty_error(&ctx.ctx.func, e)
+                );
+                std::process::exit(1);
+            }
+            _ => panic!("{e:?}"),
+        }
+    }
 }
 
 struct ObjLayout {
@@ -1047,7 +1052,11 @@ impl<'a> EmitCtx<'a> {
                     );
                     let next_block = self.next_block();
                     let exc_block = self.create_block();
-                    self.ins().setjmp(env, next_block, &[], exc_block, &[]);
+
+                    let setjmp_ref = self.native_fun("setjmp");
+                    let setjmp_inst = self.ins().call(setjmp_ref, &[env]);
+                    let r = self.inst_results(setjmp_inst)[0];
+                    self.ins().brif(r, exc_block, &[], next_block, &[]);
 
                     self.switch_to_block(exc_block);
                     let exc_value = self.ins().load(
@@ -1351,8 +1360,7 @@ impl<'a> EmitCtx<'a> {
     fn set_field(&mut self, obj: &Reg, fid: &Idx, val: &Reg) {
         match &self.code[self.fun[*obj]] {
             HLType::Struct(_) | HLType::Object(_) => {
-                let (offset, ft) =
-                    self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
+                let (offset, ft) = self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
                 let val_val = self.load_reg(val);
                 let obj = self.load_reg(obj);
                 match (self.reg_type(val), &self.code[ft]) {
@@ -1387,17 +1395,16 @@ impl<'a> EmitCtx<'a> {
                 //      *hl_vfields(obj)[fid] = val;
                 //  else
                 //      hl_dyn_set(obj,hash(field),vt,val)
-    
+
                 let obj_val = self.load_reg(obj);
                 let val_val = self.load_reg(val);
                 let field_addr = self.ins().load(
                     types::I64,
                     MemFlags::new(),
                     obj_val,
-                    size_of::<vvirtual>() as i32
-                        + (fid.0 as usize * size_of::<usize>()) as i32,
+                    size_of::<vvirtual>() as i32 + (fid.0 as usize * size_of::<usize>()) as i32,
                 );
-    
+
                 let next_block = self.next_block();
                 self.emit_brif(
                     field_addr,
@@ -1413,12 +1420,11 @@ impl<'a> EmitCtx<'a> {
             _ => panic!(),
         }
     }
-    
+
     fn get_field(&mut self, dst: &Reg, obj: &Reg, fid: &Idx) {
         match &self.code[self.fun[*obj]] {
             HLType::Struct(_) | HLType::Object(_) => {
-                let (offset, ft) =
-                    self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
+                let (offset, ft) = self.lookup_field(self.fun[*obj], fid.0 as usize).unwrap();
                 let obj = self.load_reg(obj);
                 let ty = self.reg_cl_ty(dst);
                 match (self.reg_type(dst), &self.code[ft]) {
@@ -1427,8 +1433,7 @@ impl<'a> EmitCtx<'a> {
                         self.store_reg(dst, val);
                     }
                     _ => {
-                        let val =
-                            self.ins().load(ty, MemFlags::new(), obj, offset as i32);
+                        let val = self.ins().load(ty, MemFlags::new(), obj, offset as i32);
                         self.store_reg(dst, val);
                     }
                 }
@@ -1439,17 +1444,16 @@ impl<'a> EmitCtx<'a> {
                 //      *hl_vfields(obj)[fid] = val;
                 //  else
                 //      hl_dyn_set(obj,hash(field),vt,val)
-    
+
                 let obj_val = self.load_reg(obj);
-    
+
                 let field_addr = self.ins().load(
                     types::I64,
                     MemFlags::new(),
                     obj_val,
-                    size_of::<vvirtual>() as i32
-                        + (fid.0 as usize * size_of::<usize>()) as i32,
+                    size_of::<vvirtual>() as i32 + (fid.0 as usize * size_of::<usize>()) as i32,
                 );
-    
+
                 let next_block = self.next_block();
                 self.emit_brif(
                     field_addr,
@@ -1467,7 +1471,7 @@ impl<'a> EmitCtx<'a> {
             _ => panic!(),
         }
     }
-    
+
     fn emit_call(&mut self, dst: &Reg, f: &FunIdx, args: &[Reg]) {
         let f_ref = self
             .m
