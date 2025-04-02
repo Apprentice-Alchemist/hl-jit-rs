@@ -3,10 +3,7 @@ use std::{
     fmt::{Display, Write},
 };
 
-use cranelift::{
-    jit::{JITBuilder, JITModule},
-    module::{FuncId, Linkage, Module},
-};
+use hl_code::NativeFun;
 use libloading::Library;
 
 use crate::{codegen::CodegenCtx, sys::hl_type};
@@ -21,21 +18,11 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     )
     .unwrap();
     let mut libs: HashMap<String, &mut Library> = HashMap::new();
-    for (lib, name, _, _) in &code.natives {
-        let (libname, libfile, optional) = match &code[*lib] {
-            "std" => ("hl", "/usr/local/lib/libhl.so".to_string(), false),
-            "?std" => ("hl", "/usr/local/lib/libhl.so".to_string(), true),
-            "builtin" => continue,
-            val => {
-                let optional = val.starts_with('?');
-                let val = if optional { &val[1..] } else { val };
-                (val, format!("/usr/local/lib/{}.hdll", val), optional)
-            }
-        };
-        let name = &code[*name];
-        let symbol_name = format!("{libname}_{name}");
+    for native in code.natives() {
+        let dll_name = native.dll_name();
+        let symbol_name = native.symbol_name();
         let symbol = unsafe {
-            libs.entry(libfile)
+            libs.entry(dll_name)
                 .or_insert_with_key(|key| unsafe {
                     Box::leak(Box::new(libloading::Library::new(key).unwrap()))
                 })

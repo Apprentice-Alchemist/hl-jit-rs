@@ -37,7 +37,9 @@ impl TypeObj {
             }
         }
 
-        self.super_.map(|s| code[s].type_obj().unwrap().lookup_proto(name, code)).flatten()
+        self.super_
+            .map(|s| code[s].type_obj().unwrap().lookup_proto(name, code))
+            .flatten()
     }
 }
 
@@ -197,6 +199,39 @@ impl Index<Reg> for HLFunction {
     }
 }
 
+pub struct NativeFun<'a> {
+    pub optional: bool,
+    pub lib: &'a str,
+    pub name: &'a str,
+    pub ty: TypeIdx,
+    pub fun: FunIdx,
+}
+
+impl NativeFun<'_> {
+    pub fn symbol_name(&self) -> String {
+        let lib = match self.lib {
+            "std" => "hl",
+            val => val,
+        };
+        let name = self.name;
+        format!("{lib}_{name}")
+    }
+
+    pub fn dll_name(&self) -> String {
+        use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
+        match self.lib {
+            "std" => {
+                if cfg!(windows) {
+                    "libhl.dll".to_string()
+                } else {
+                    format!("{DLL_PREFIX}hl{DLL_SUFFIX}")
+                }
+            }
+            val => format!("{val}.hdll"),
+        }
+    }
+}
+
 pub struct Code {
     pub version: u8,
     pub flags: usize,
@@ -216,6 +251,23 @@ pub struct Code {
 impl Code {
     pub fn from_file(path: impl AsRef<Path>) -> io::Result<Code> {
         reader::Reader::open_file(path)?.r()
+    }
+
+    pub fn natives(&self) -> impl Iterator<Item = NativeFun<'_>> {
+        self.natives
+            .iter()
+            .map(|(lib_idx, name_idx, type_idx, fun_idx)| {
+                let lib = &self[*lib_idx];
+                let optional = lib.starts_with('?');
+                let lib = if optional { &lib[1..] } else { lib };
+                NativeFun {
+                    optional,
+                    lib,
+                    name: &self[*name_idx],
+                    ty: *type_idx,
+                    fun: *fun_idx,
+                }
+            })
     }
 }
 

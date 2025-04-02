@@ -3,9 +3,9 @@ use std::error::Error;
 use std::mem::offset_of;
 
 use cranelift::codegen::Context;
-use cranelift::jit::{JITBuilder, JITModule};
 use cranelift::module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use cranelift::prelude::*;
+use hl_code::NativeFun;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
 use crate::sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
@@ -106,14 +106,15 @@ static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
+    let mut signature = m.make_signature();
     for (name, args, ret) in NATIVE_CALLS {
-        let mut signature = m.make_signature();
         signature.params = args.iter().map(|t| AbiParam::new(*t)).collect();
         signature.returns = ret.iter().map(|t| AbiParam::new(*t)).collect();
         let id = m
             .declare_function(name, Linkage::Import, &signature)
             .unwrap();
         idxs.native_calls.insert(name, id);
+        m.clear_signature(&mut signature);
     }
 }
 
@@ -163,23 +164,19 @@ impl<'a> CodegenCtx<'a> {
             self.idxs.fn_map.insert(fun.idx, id);
             self.idxs.fn_type_map.insert(fun.idx, fun.ty);
         }
-        for (lib, name, ty, fun_idx) in &code.natives {
-            let lib = match &code[*lib] {
-                "std" => "hl",
-                "?std" => "hl",
-                val => if val.starts_with('?') { &val[1..] } else { val },
-            };
-            let name = &code[*name];
-
-            let symbol_name = format!("{lib}_{name}");
+        for native @ NativeFun {
+            lib, name, ty, fun, ..
+        } in code.natives()
+        {
+            let symbol_name = native.symbol_name();
             let mut signature = self.m.make_signature();
-            fill_signature_ty(&code, &mut signature, *ty);
+            fill_signature_ty(&code, &mut signature, ty);
             let id = self
                 .m
                 .declare_function(&symbol_name, Linkage::Import, &signature)
                 .unwrap();
-            self.idxs.fn_map.insert(*fun_idx, id);
-            self.idxs.fn_type_map.insert(*fun_idx, *ty);
+            self.idxs.fn_map.insert(fun, id);
+            self.idxs.fn_type_map.insert(fun, ty);
         }
         for fun in code.functions.iter() {
             emit::emit_fun(self, &code, fun);
@@ -279,17 +276,14 @@ fn fill_signature_ty(code: &Code, sig: &mut Signature, ty: TypeIdx) {
 }
 
 fn fill_signature(code: &Code, sig: &mut Signature, args: &[TypeIdx], ret: TypeIdx) {
-    sig.params.extend(
-        args.iter()
-            .filter_map(|idx| {
-                if !code[*idx].is_void() {
-                    let clir_ty = cranelift_type(&code[*idx]);
-                    Some(AbiParam::new(clir_ty))
-                } else {
-                    None
-                }
-            }),
-    );
+    sig.params.extend(args.iter().filter_map(|idx| {
+        if !code[*idx].is_void() {
+            let clir_ty = cranelift_type(&code[*idx]);
+            Some(AbiParam::new(clir_ty))
+        } else {
+            None
+        }
+    }));
     let ret_ty = &code[ret];
     if !ret_ty.is_void() {
         sig.returns.push(AbiParam::new(cranelift_type(ret_ty)));
