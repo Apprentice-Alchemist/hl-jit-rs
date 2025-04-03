@@ -52,12 +52,12 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
     let fun_type_id = m.declare_anonymous_data(true, false).unwrap();
     {
         let mut fun_table_data = DataDescription::new();
-        fun_table_data.define_zeroinit(
-            m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len()),
+        fun_table_data.define(
+            vec![0u8; m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())].into_boxed_slice(),
         );
         let mut fun_type_data = DataDescription::new();
-        fun_type_data.define_zeroinit(
-            m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len()),
+        fun_type_data.define(
+            vec![0u8; m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())].into_boxed_slice(),
         );
         for fun in &code.functions {
             write_fun(
@@ -91,7 +91,7 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
         m.define_data(fun_type_id, &fun_type_data);
     }
     let mut data = DataDescription::new();
-    data.define_zeroinit(size_of::<hl_module_context>());
+    data.define(vec![0u8; size_of::<hl_module_context>()].into_boxed_slice());
     write_data(
         m,
         &mut data,
@@ -154,7 +154,7 @@ fn build_type_arr(
     let align = align_of::<*mut hl_type>();
     let mut data = DataDescription::new();
     data.set_align(align as u64);
-    data.define_zeroinit(size);
+    data.define(vec![0u8; size].into_boxed_slice());
     for (pos, ty) in arr.iter().enumerate() {
         write_data(
             m,
@@ -199,7 +199,7 @@ fn build_field_arr(
     let align = align_of::<hl_obj_field>();
     let mut data = DataDescription::new();
     data.set_align(align as u64);
-    data.define_zeroinit(size);
+    data.define(vec![0u8; size].into_boxed_slice());
     for (pos, (ustr, ty)) in fields.iter().enumerate() {
         write_data(
             m,
@@ -508,7 +508,7 @@ pub fn define_types(
 pub fn define_globals(m: &mut dyn Module, code: &Code, idxs: &Indexes) {
     for (gidx, id) in &idxs.globals {
         let mut data = DataDescription::new();
-        data.define_zeroinit(8);
+        data.define(vec![0u8; 8].into_boxed_slice());
 
         // This constant handling is only meant to work with strings
         // TODO: fix this if HL ever emits other kinds of constants

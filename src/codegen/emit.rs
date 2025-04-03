@@ -676,7 +676,7 @@ impl<'a> EmitCtx<'a> {
 
                     let id = self.m.declare_anonymous_data(false, false).unwrap();
                     let mut data = DataDescription::new();
-                    data.define_zeroinit(size_of::<crate::sys::vclosure>());
+                    data.define(vec![0u8; size_of::<vclosure>()].into_boxed_slice());
 
                     let ty_id = self.m.declare_data_in_data(
                         self.idxs.types[self.idxs.fn_type_map[&fid].0],
