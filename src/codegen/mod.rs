@@ -8,7 +8,7 @@ use cranelift::prelude::*;
 use hl_code::NativeFun;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
-use crate::sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
+use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
 
 mod data;
 mod emit;

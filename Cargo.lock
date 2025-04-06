@@ -498,7 +498,15 @@ dependencies = [
  "clap",
  "cranelift",
  "hl-code",
+ "hl-sys",
  "libloading",
+]
+
+[[package]]
+name = "hl-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
 ]
 
 [[package]]

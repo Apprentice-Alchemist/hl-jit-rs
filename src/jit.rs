@@ -6,7 +6,8 @@ use std::{
 use hl_code::NativeFun;
 use libloading::Library;
 
-use crate::{codegen::CodegenCtx, sys::hl_type};
+use crate::codegen::CodegenCtx;
+use cranelift::{jit::{JITBuilder, JITModule}, module::FuncId};
 
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(

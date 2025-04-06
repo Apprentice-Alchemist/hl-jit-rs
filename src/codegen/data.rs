@@ -6,11 +6,12 @@ use cranelift::{
     prelude::{AbiParam, Signature},
 };
 
-use crate::{
-    code::{Code, FunIdx, GlobalIdx, HLType, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx, Idx}, sys::{
-        hl_enum_construct, hl_module_context, hl_obj_field, hl_obj_proto, hl_type, hl_type_enum,
-        hl_type_fun, hl_type_kind, hl_type_obj, hl_type_virtual,
-    }
+use crate::code::{
+    Code, FunIdx, GlobalIdx, HLType, Idx, TypeEnum, TypeFun, TypeIdx, TypeObj, TypeVirtual, UStrIdx,
+};
+use hl_sys::{
+    hl_enum_construct, hl_module_context, hl_obj_field, hl_obj_proto, hl_type, hl_type_enum,
+    hl_type_fun, hl_type_kind, hl_type_obj, hl_type_virtual,
 };
 
 use super::Indexes;
@@ -53,11 +54,19 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
     {
         let mut fun_table_data = DataDescription::new();
         fun_table_data.define(
-            vec![0u8; m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())].into_boxed_slice(),
+            vec![
+                0u8;
+                m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())
+            ]
+            .into_boxed_slice(),
         );
         let mut fun_type_data = DataDescription::new();
         fun_type_data.define(
-            vec![0u8; m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())].into_boxed_slice(),
+            vec![
+                0u8;
+                m.isa().pointer_bytes() as usize * (code.functions.len() + code.natives.len())
+            ]
+            .into_boxed_slice(),
         );
         for fun in &code.functions {
             write_fun(
@@ -313,7 +322,12 @@ fn build_type_obj(
             .copy_from_slice(&nbindings.to_ne_bytes());
         data.define(buf.into_boxed_slice());
     }
-    write_data(m, &mut data, idxs.ustr[name.0], offset_of!(hl_type_obj, name));
+    write_data(
+        m,
+        &mut data,
+        idxs.ustr[name.0],
+        offset_of!(hl_type_obj, name),
+    );
     if let Some(super_) = super_ {
         write_data(
             m,
@@ -458,8 +472,8 @@ pub fn define_types(
     for (pos, ty) in code.types.iter().enumerate() {
         let id = idxs.types[pos];
         let mut data = DataDescription::new();
-        data.set_align(align_of::<crate::sys::hl_type>() as u64);
-        let mut buf: Vec<u8> = vec![0u8; size_of::<crate::sys::hl_type>()];
+        data.set_align(align_of::<hl_type>() as u64);
+        let mut buf: Vec<u8> = vec![0u8; size_of::<hl_type>()];
         let kind_offset = offset_of!(hl_type, kind);
         buf[kind_offset..kind_offset + size_of::<hl_type_kind>()]
             .copy_from_slice(&ty.as_u32().to_ne_bytes());

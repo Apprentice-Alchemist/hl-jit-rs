@@ -1,39 +1,24 @@
 #![allow(unused, dead_code)]
 use clap::Parser;
-use cranelift::jit::{JITBuilder, JITModule};
 use std::{
     error::Error,
-    ffi::{c_int, c_void, CStr, CString},
+    ffi::{CStr, CString, c_int, c_void},
+    io::Write,
+    path::{Path, PathBuf},
     process::abort,
     ptr::{null, null_mut},
-    str::FromStr, time::Instant,
+    str::FromStr,
+    time::Instant,
 };
-use sys::{hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HFUN, vclosure, vdynamic};
+use hl_sys::{
+    hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32, hl_type_kind_HF64, hl_type_kind_HFUN, hlt_bytes, vclosure, vdynamic, vdynamic__bindgen_ty_1
+};
 
 pub use hl_code as code;
 
 mod codegen;
 mod jit;
 mod object;
-mod sys {
-    #![allow(non_upper_case_globals)]
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
-    #![allow(improper_ctypes, reason = "triggered by bindgen generated u128")]
-    #![allow(dead_code)]
-    #![allow(unsafe_op_in_unsafe_fn)]
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-    impl varray {
-        /// # Safety
-        /// The type parameter `T` needs to be correct
-        pub unsafe fn as_slice<T>(&self) -> &[T] {
-            unsafe {
-                core::slice::from_raw_parts(core::ptr::from_ref(self).offset(1).cast(), self.size as usize)
-            }
-        }
-    }
-}
 
 /// Hashlink JIT compiler
 #[derive(Parser, Debug)]
@@ -108,25 +93,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
         }
         unsafe {
-            sys::hl_global_init();
-            sys::hl_setup_callbacks(
+            hl_sys::hl_global_init();
+            hl_sys::hl_setup_callbacks(
                 hlc_static_call as *mut c_void,
                 hlc_get_wrapper as *mut c_void,
             );
-            sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
-            sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());
+            hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
+            hl_sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());
             let mut args: Vec<&mut CStr> = args
                 .args
                 .iter()
                 .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
                 .collect();
-            sys::hl_sys_init(args.as_mut_ptr().cast(), args.len() as i32, null_mut());
+            hl_sys::hl_sys_init(args.as_mut_ptr().cast(), args.len() as i32, null_mut());
             let mut is_exception = false;
 
             let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
                 fun: &mut hl_type_fun {
                     args: null_mut(),
-                    ret: &raw mut sys::hlt_void,
+                    ret: &raw mut hl_sys::hlt_void,
                     nargs: 0,
                     parent: null_mut(),
                     closure_type: core::mem::zeroed(),
@@ -150,15 +135,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 stackCount: 0,
                 value: null_mut(),
             };
-            let ret = sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
+            let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
             if is_exception {
-                let stack = sys::hl_exception_stack().as_ref().unwrap();
+                let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
                 eprintln!(
                     "Uncaught exception: {:#?}",
-                    CStr::from_ptr(sys::hl_to_utf8(sys::hl_to_string(ret)))
+                    CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
                 );
                 for (pos, elem) in stack.as_slice::<*mut u16>().iter().enumerate() {
-                    println!("  {pos}: {:#?}", CStr::from_ptr(sys::hl_to_utf8(*elem)));
+                    println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
                 }
                 std::process::exit(1);
             }

@@ -10,12 +10,9 @@ use cranelift::{codegen::ir::StackSlot, module::Module};
 use hl_code::FunIdx;
 
 use crate::code::TypeFun;
+use crate::code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx};
 use crate::codegen::cranelift_type;
-use crate::sys::{hl_thread_info, hl_trap_ctx, vclosure, vdynamic, venum};
-use crate::{
-    code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx},
-    sys::{hl_type, varray, vvirtual},
-};
+use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, venum, vvirtual};
 
 use super::{CodegenCtx, Indexes};
 
@@ -1030,7 +1027,7 @@ impl<'a> EmitCtx<'a> {
                         types::I64,
                         MemFlags::trusted(),
                         tinf,
-                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                        offset_of!(hl_thread_info, trap_current) as i32,
                     );
                     self.ins().stack_store(
                         trap_current,
@@ -1042,7 +1039,7 @@ impl<'a> EmitCtx<'a> {
                         MemFlags::trusted(),
                         ctx_addr,
                         tinf,
-                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                        offset_of!(hl_thread_info, trap_current) as i32,
                     );
 
                     let env = self.ins().stack_addr(
@@ -1084,7 +1081,7 @@ impl<'a> EmitCtx<'a> {
                         types::I64,
                         MemFlags::trusted(),
                         tinf,
-                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                        offset_of!(hl_thread_info, trap_current) as i32,
                     );
                     let trap_prev = self.ins().load(
                         types::I64,
@@ -1096,7 +1093,7 @@ impl<'a> EmitCtx<'a> {
                         MemFlags::trusted(),
                         trap_prev,
                         tinf,
-                        offset_of!(crate::sys::hl_thread_info, trap_current) as i32,
+                        offset_of!(hl_thread_info, trap_current) as i32,
                     );
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
