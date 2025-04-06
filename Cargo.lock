@@ -489,6 +489,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hl-ffi"
+version = "0.1.0"
+dependencies = [
+ "hl-sys",
+]
+
+[[package]]
 name = "hl-jit"
 version = "0.1.0"
 dependencies = [
@@ -498,6 +505,7 @@ dependencies = [
  "clap",
  "cranelift",
  "hl-code",
+ "hl-ffi",
  "hl-sys",
  "libloading",
 ]
