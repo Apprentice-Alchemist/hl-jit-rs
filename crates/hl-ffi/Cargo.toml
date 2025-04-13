@@ -3,5 +3,9 @@ name = "hl-ffi"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["staticlib", "lib"]
+
 [dependencies]
+cfg-if = "1.0.0"
 hl-sys = { path = "../hl-sys" }

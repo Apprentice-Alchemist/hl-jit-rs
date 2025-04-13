@@ -12,6 +12,10 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0 WITH LLVM-exception"
 
+[features]
+default = ["hl-ffi"]
+libffi = []
+
 [dependencies]
 backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
@@ -24,7 +28,7 @@ cranelift = { version = "0.118.0", features = [
 libloading = "0.8.6"
 hl-code = { path = "crates/hl-code" }
 hl-sys = { path = "crates/hl-sys" }
-hl-ffi = { path = "crates/hl-ffi" }
+hl-ffi = { path = "crates/hl-ffi", optional = true }
 
 [build-dependencies]
 bindgen = "0.71.1"

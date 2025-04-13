@@ -1,7 +1,33 @@
-use std::ffi::c_void;
+mod sysv;
 
-const CALL_REGS_COUNT: usize = 6;
-const FPU_CALL_REGS: usize = 8;
+use std::{ffi::c_void, mem::MaybeUninit, ptr::null_mut};
+
+use hl_sys::{
+    hl_is_dynamic, hl_type, hl_type_kind_HF32, hl_type_kind_HF64, hl_wrapper_call,
+    vclosure_wrapper, vdynamic,
+};
+
+use sysv::CALL_REGS_COUNT;
+use sysv::FPU_CALL_REGS;
+
+#[derive(Copy, Clone)]
+pub union CpuValue {
+    pub i8: i8,
+    pub i16: i16,
+    pub i32: i32,
+    pub i64: i64,
+    pub ptr: *mut c_void,
+}
+#[derive(Copy, Clone)]
+pub union FloatValue {
+    pub f32: f32,
+    pub f64: f64,
+}
+
+pub union Value {
+    pub cpu: CpuValue,
+    pub float: FloatValue,
+}
 
 #[derive(Default)]
 struct CallInfo {
@@ -21,6 +47,7 @@ impl CallInfo {
             self.stack.push(val);
         }
     }
+
     pub fn push_fpu(&mut self, val: u64) {
         if self.num_fpu_args < FPU_CALL_REGS {
             self.fpu_regs[self.num_fpu_args] = val;
@@ -31,14 +58,15 @@ impl CallInfo {
     }
 }
 
+#[unsafe(export_name = "hlc_static_call")]
 pub extern "C" fn static_call(
     fun: *const c_void,
-    ft: &hl_sys::hl_type,
+    ft_ptr: *mut hl_sys::hl_type,
     args: *const *const c_void,
     out: *mut hl_sys::vdynamic,
 ) -> *mut c_void {
     let mut info = CallInfo::default();
-
+    let ft = unsafe { ft_ptr.as_ref().unwrap() };
     for (pos, ty) in ft.fun().args().iter().enumerate() {
         match ty.kind {
             hl_sys::hl_type_kind_HUI8 => {
@@ -157,7 +185,7 @@ pub extern "C" fn static_call(
     }
 }
 
-#[allow(
+#[expect(
     clashing_extern_declarations,
     reason = "static_call_impl is polymorphic"
 )]
@@ -218,46 +246,188 @@ unsafe extern "C" {
     ) -> bool;
 }
 
-// sysv x64_64:
-// - call regs: rdi, rsi, rdx, rcx, r8, and r9
-// - fpu call regs: xmm0 through xmm7
-// - preserved regs: rbx, rsp, rbp, r12, r13, r14, and r15
-// - scratch regs: rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11
-// - return in rax:
+#[unsafe(export_name = "hlc_get_wrapper")]
+pub extern "C" fn get_wrapper(_t: *mut hl_type) -> *const c_void {
+    unsafe extern "C" {
+        unsafe fn wrapper_call_impl();
+    }
+    wrapper_call_impl as *const c_void
+}
 
-core::arch::global_asm!(
-    ".global static_call_impl",
-    "static_call_impl:",
-    "   push rbp",
-    "   mov rbp, rsp",
-    // Move function ptr, stack begin and stack end
-    "   mov r10, rdi",
-    "   mov rax, rsi",
-    "   mov r11, rdx",
-    // set up call regs
-    "   mov rdi, [rax]",
-    "   mov rsi, [rax + 8]",
-    "   mov rdx, [rax + 16]",
-    "   mov rcx, [rax + 24]",
-    "   mov r8,  [rax + 32]",
-    "   mov r9,  [rax + 40]",
-    // set up fpu call regs,
-    "   movsd xmm0, [rax + 48]",
-    "   movsd xmm1, [rax + 56]",
-    "   movsd xmm2, [rax + 64]",
-    "   movsd xmm3, [rax + 72]",
-    "   movsd xmm4, [rax + 80]",
-    "   movsd xmm5, [rax + 88]",
-    "   movsd xmm6, [rax + 96]",
-    "   movsd xmm7, [rax + 104]",
-    // set up stack args
-    "   0:  cmp rax, r11",
-    "       jz 1f",
-    "       sub rax, 8",
-    "       push [rax]",
-    "       jmp 0b",
-    "   1: call r10",
-    "   mov rsp, rbp",
-    "   pop rbp",
-    "   ret"
-);
+#[repr(C)]
+struct Registers {
+    cpu_regs: [CpuValue; CALL_REGS_COUNT],
+    fpu_regs: [FloatValue; FPU_CALL_REGS],
+}
+
+extern "C" fn wrapper_ptr(
+    c: *const vclosure_wrapper,
+    regs: &Registers,
+    stack_args: *const Value,
+) -> *mut c_void {
+    let mut args = Vec::new();
+    let t = unsafe { &*((*c).cl).t };
+    let mut num_cpu_args = 1;
+    let mut num_fpu_args = 0;
+    let mut num_stack_args = 0;
+    for arg in t.fun().args() {
+        if unsafe { hl_is_dynamic(core::ptr::from_ref(*arg).cast_mut()) } {
+            if num_cpu_args < CALL_REGS_COUNT {
+                args.push(unsafe { regs.cpu_regs[num_cpu_args].ptr });
+                num_cpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).read().cpu.ptr);
+                }
+                num_stack_args += 1;
+            }
+        } else if arg.kind == hl_type_kind_HF32 || arg.kind == hl_type_kind_HF64 {
+            if num_fpu_args < FPU_CALL_REGS {
+                args.push(
+                    core::ptr::from_ref(&regs.fpu_regs[num_fpu_args])
+                        .cast_mut()
+                        .cast(),
+                );
+                num_fpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
+                }
+                num_stack_args += 1;
+            }
+        } else {
+            if num_cpu_args < CALL_REGS_COUNT {
+                args.push(
+                    core::ptr::from_ref(&regs.cpu_regs[num_cpu_args])
+                        .cast_mut()
+                        .cast(),
+                );
+                num_cpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
+                }
+                num_stack_args += 1;
+            }
+        }
+    }
+    match unsafe { (*t.fun().ret).kind } {
+        hl_sys::hl_type_kind_HVOID => unsafe {
+            return hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), null_mut());
+        },
+        hl_sys::hl_type_kind_HUI8 => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.ptr;
+        },
+        hl_sys::hl_type_kind_HUI16 => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.ptr;
+        },
+        hl_sys::hl_type_kind_HI32 => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.ptr;
+        },
+        hl_sys::hl_type_kind_HI64 | hl_sys::hl_type_kind_HGUID => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.ptr;
+        },
+        hl_sys::hl_type_kind_HF32 => {
+            panic!()
+        }
+        hl_sys::hl_type_kind_HF64 => {
+            panic!()
+        }
+        hl_sys::hl_type_kind_HBOOL => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.ptr;
+        },
+        hl_sys::hl_type_kind_HBYTES
+        | hl_sys::hl_type_kind_HDYN
+        | hl_sys::hl_type_kind_HFUN
+        | hl_sys::hl_type_kind_HOBJ
+        | hl_sys::hl_type_kind_HARRAY
+        | hl_sys::hl_type_kind_HTYPE
+        | hl_sys::hl_type_kind_HREF
+        | hl_sys::hl_type_kind_HVIRTUAL
+        | hl_sys::hl_type_kind_HDYNOBJ
+        | hl_sys::hl_type_kind_HABSTRACT
+        | hl_sys::hl_type_kind_HENUM
+        | hl_sys::hl_type_kind_HNULL
+        | hl_sys::hl_type_kind_HMETHOD
+        | hl_sys::hl_type_kind_HSTRUCT => unsafe {
+            return hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), null_mut());
+        },
+        hl_sys::hl_type_kind_HPACKED => panic!(),
+        _ => panic!(),
+    }
+}
+extern "C" fn wrapper_f64(
+    c: *const vclosure_wrapper,
+    regs: &Registers,
+    stack_args: *const Value,
+) -> f64 {
+    let mut args = Vec::new();
+    let t = unsafe { &*((*c).cl).t };
+    let mut num_cpu_args = 1;
+    let mut num_fpu_args = 0;
+    let mut num_stack_args = 0;
+    for arg in t.fun().args() {
+        if unsafe { hl_is_dynamic(core::ptr::from_ref(*arg).cast_mut()) } {
+            if num_cpu_args < CALL_REGS_COUNT {
+                args.push(unsafe { regs.cpu_regs[num_cpu_args].ptr });
+                num_cpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).read().cpu.ptr);
+                }
+                num_stack_args += 1;
+            }
+        } else if arg.kind == hl_type_kind_HF32 || arg.kind == hl_type_kind_HF64 {
+            if num_fpu_args < FPU_CALL_REGS {
+                args.push(
+                    core::ptr::from_ref(&regs.fpu_regs[num_fpu_args])
+                        .cast_mut()
+                        .cast(),
+                );
+                num_fpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
+                }
+                num_stack_args += 1;
+            }
+        } else {
+            if num_cpu_args < CALL_REGS_COUNT {
+                args.push(
+                    core::ptr::from_ref(&regs.cpu_regs[num_cpu_args])
+                        .cast_mut()
+                        .cast(),
+                );
+                num_cpu_args += 1;
+            } else {
+                unsafe {
+                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
+                }
+                num_stack_args += 1;
+            }
+        }
+    }
+    match unsafe { (*t.fun().ret).kind } {
+        hl_sys::hl_type_kind_HF32 => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.d;
+        },
+        hl_sys::hl_type_kind_HF64 => unsafe {
+            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
+            return ret.v.d;
+        },
+        _ => panic!(),
+    }
+}

@@ -83,6 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
         let (m, entrypoint) = crate::jit::compile_module(code);
         println!("compiling done in {:?}", start.elapsed());
+
+        #[cfg(not(feature = "hl-ffi"))]
         unsafe extern "C" {
             unsafe fn hlc_static_call(
                 fun: *mut c_void,
@@ -94,6 +96,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         unsafe {
             hl_sys::hl_global_init();
+            #[cfg(feature = "hl-ffi")]
+            hl_sys::hl_setup_callbacks(
+                hl_ffi::static_call as *mut c_void,
+                hl_ffi::get_wrapper as *mut c_void,
+            );
+            #[cfg(not(feature = "hl-ffi"))]
             hl_sys::hl_setup_callbacks(
                 hlc_static_call as *mut c_void,
                 hlc_get_wrapper as *mut c_void,
