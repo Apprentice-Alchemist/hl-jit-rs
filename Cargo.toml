@@ -29,6 +29,7 @@ libloading = "0.8.6"
 hl-code = { path = "crates/hl-code" }
 hl-sys = { path = "crates/hl-sys" }
 hl-ffi = { path = "crates/hl-ffi", optional = true }
+gimli = "0.31.1"
 
 [build-dependencies]
 bindgen = "0.71.1"

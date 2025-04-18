@@ -2,21 +2,20 @@ use cranelift::{
     module::FuncId,
     object::{ObjectBuilder, ObjectModule, ObjectProduct},
     prelude::{
+        Configurable,
         isa::lookup,
-        settings::{self, Flags}, Configurable,
+        settings::{self, Flags},
     },
 };
 
-use crate::codegen::CodegenCtx;
+use crate::{codegen::CodegenCtx, unwind::UnwindModule};
 
 pub fn compile_module(code: crate::code::Code) -> ObjectProduct {
     let mut builder = settings::builder();
     builder.set("is_pic", "true");
     let flags = Flags::new(builder);
     let isa = cranelift::native::builder().unwrap().finish(flags).unwrap();
-    let mod_builder =
-        ObjectBuilder::new(isa, "foo", cranelift::module::default_libcall_names()).unwrap();
-    let mut module = ObjectModule::new(mod_builder);
+    let mut module = UnwindModule::new(ObjectModule::new(mod_builder), true);
 
     let mut ctx = CodegenCtx::new(&mut module);
     let entrypoint = ctx.compile(code);

@@ -505,6 +505,7 @@ dependencies = [
  "cc",
  "clap",
  "cranelift",
+ "gimli",
  "hl-code",
  "hl-ffi",
  "hl-sys",

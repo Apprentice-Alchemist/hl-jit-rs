@@ -19,6 +19,7 @@ pub use hl_code as code;
 mod codegen;
 mod jit;
 mod object;
+mod unwind;
 
 /// Hashlink JIT compiler
 #[derive(Parser, Debug)]

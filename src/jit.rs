@@ -3,11 +3,12 @@ use std::{
     fmt::{Display, Write},
 };
 
+pub use cranelift::jit::{JITBuilder, JITModule};
+use cranelift::module::{FuncId, Linkage, Module};
 use hl_code::NativeFun;
 use libloading::Library;
 
 use crate::codegen::CodegenCtx;
-use cranelift::{jit::{JITBuilder, JITModule}, module::FuncId};
 
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(
@@ -36,9 +37,9 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     }
 
     let mut jit_m = JITModule::new(jit_b);
-
+    let mut jit_m = crate::unwind::UnwindModule::new(jit_m, false);
     let mut ctx = CodegenCtx::new(&mut jit_m);
     let entrypoint = ctx.compile(code);
     jit_m.finalize_definitions();
-    (jit_m, entrypoint)
+    (jit_m.module, entrypoint)
 }
