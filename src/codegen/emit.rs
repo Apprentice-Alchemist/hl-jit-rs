@@ -822,9 +822,9 @@ impl<'a> EmitCtx<'a> {
                     offset,
                     IntCC::SignedGreaterThanOrEqual,
                     Some(if cfg!(target_arch = "x86_64") {
-                        FloatCC::GreaterThanOrEqual
-                    } else {
                         FloatCC::UnorderedOrGreaterThanOrEqual
+                    } else {
+                        FloatCC::GreaterThanOrEqual
                     }),
                 ),
                 OpCode::JNotGte { a, b, offset } => self.emit_jump(
@@ -833,9 +833,9 @@ impl<'a> EmitCtx<'a> {
                     offset,
                     IntCC::SignedLessThan,
                     Some(if cfg!(target_arch = "x86_64") {
-                        FloatCC::LessThan
-                    } else {
                         FloatCC::UnorderedOrLessThan
+                    } else {
+                        FloatCC::LessThan
                     }),
                 ),
                 OpCode::JEq { a, b, offset } => {
@@ -1131,19 +1131,34 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::GetArray { dst, mem, offset } => {
                     let ty = self.reg_cl_ty(dst);
-
-                    let arr_addr = self.load_reg(mem);
-                    let offset = self.load_reg(offset);
-                    let offset = self.ins().uextend(types::I64, offset);
-                    let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
-                    let val_addr = self.ins().iadd(arr_addr, offset);
-                    let val = self.ins().load(
-                        ty,
-                        MemFlags::trusted(),
-                        val_addr,
-                        size_of::<varray>() as i32,
-                    );
-                    self.store_reg(dst, val);
+                    match self.reg_type(mem) {
+                        HLType::Abstract(_) => {
+                            // CArray
+                            assert!(matches!(self.reg_type(dst), HLType::Object(_) | HLType::Struct(_)));
+                            let arr_addr = self.load_reg(mem);
+                            let offset = self.load_reg(offset);
+                            let offset = self.ins().uextend(types::I64, offset);
+                            let layout = self.get_obj_layout(self.fun[*dst]).layout;
+                            let byte_offset = self.ins().imul_imm(offset, layout.size() as i64);
+                            let src_addr = self.ins().iadd(arr_addr, byte_offset);
+                            self.store_reg(dst, src_addr);
+                        }
+                        HLType::Array => {
+                            let arr_addr = self.load_reg(mem);
+                            let offset = self.load_reg(offset);
+                            let offset = self.ins().uextend(types::I64, offset);
+                            let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
+                            let val_addr = self.ins().iadd(arr_addr, offset);
+                            let val = self.ins().load(
+                                ty,
+                                MemFlags::trusted(),
+                                val_addr,
+                                size_of::<varray>() as i32,
+                            );
+                            self.store_reg(dst, val);
+                        }
+                        t => panic!("get array with type {t:?}"),
+                    }
                 }
                 OpCode::SetI8 { mem, offset, val } => {
                     let mem = self.load_reg(mem);
@@ -1171,15 +1186,54 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::SetArray { mem, offset, val } => {
                     let ty = self.reg_cl_ty(val);
-
-                    let arr_addr = self.load_reg(mem);
-                    let offset = self.load_reg(offset);
-                    let offset = self.ins().sextend(types::I64, offset);
-                    let mem_addr = self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
-                    let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
-                    let val_addr = self.ins().iadd(mem_addr, offset);
-                    let val = self.load_reg(val);
-                    self.ins().store(MemFlags::trusted(), val, val_addr, 0);
+                    match self.reg_type(mem) {
+                        HLType::Abstract(_) => {
+                            // CArray
+                            match self.reg_type(val) {
+                                val_ty @ (HLType::Object(rt) | HLType::Struct(rt)) => {
+                                    let arr_addr = self.load_reg(mem);
+                                    let offset = self.load_reg(offset);
+                                    let offset = self.ins().uextend(types::I64, offset);
+                                    let layout = self.get_obj_layout(self.fun[*val]).layout;
+                                    let byte_offset =
+                                        self.ins().imul_imm(offset, layout.size() as i64);
+                                    let dest_addr = self.ins().iadd(arr_addr, byte_offset);
+                                    // let addr = self.ins().iadd_imm(obj, offset as i64);
+                                    let size = layout.size() as u64;
+                                    let dest_align = layout.align() as u8;
+                                    let src_align = layout.align() as u8;
+                                    let non_overlapping = true;
+                                    let target_config = self.m.target_config();
+                                    let val_val = self.load_reg(val);
+                                    self.emit_small_memory_copy(
+                                        target_config,
+                                        dest_addr,
+                                        val_val,
+                                        size,
+                                        dest_align,
+                                        src_align,
+                                        non_overlapping,
+                                        MemFlags::trusted(),
+                                    );
+                                }
+                                _ => {
+                                    todo!()
+                                }
+                            }
+                        }
+                        HLType::Array => {
+                            let arr_addr = self.load_reg(mem);
+                            let offset = self.load_reg(offset);
+                            let offset = self.ins().sextend(types::I64, offset);
+                            let mem_addr =
+                                self.ins().iadd_imm(arr_addr, size_of::<varray>() as i64);
+                            let offset = self.ins().imul_imm(offset, ty.bytes() as i64);
+                            let val_addr = self.ins().iadd(mem_addr, offset);
+                            let val = self.load_reg(val);
+                            self.ins().store(MemFlags::trusted(), val, val_addr, 0);
+                        }
+                        t => panic!("array set on type {t:?}"),
+                    }
                 }
                 OpCode::New { dst } => match self.reg_type(dst) {
                     HLType::Object(_) | HLType::Struct(_) => {
