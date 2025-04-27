@@ -25,9 +25,7 @@ struct Indexes {
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
 }
 
-static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
-    ("fmod", &[types::F64, types::F64], &[types::F64]),
-    ("fmodf", &[types::F32, types::F32], &[types::F32]),
+pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_alloc_obj", &[types::I64], &[types::I64]),
     ("hl_alloc_dynobj", &[], &[types::I64]),
     ("hl_alloc_virtual", &[types::I64], &[types::I64]),
@@ -102,12 +100,17 @@ static NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_get_thread", &[], &[types::I64]),
     ("hl_dyn_compare", &[types::I64, types::I64], &[types::I32]),
     ("hl_same_type", &[types::I64, types::I64], &[types::I8]),
+];
+
+static OTHER_NATIVES: &[(&str, &[Type], &[Type])] = &[
+    ("fmod", &[types::F64, types::F64], &[types::F64]),
+    ("fmodf", &[types::F32, types::F32], &[types::F32]),
     ("setjmp", &[types::I64], &[types::I32]),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
     let mut signature = m.make_signature();
-    for (name, args, ret) in NATIVE_CALLS {
+    for (name, args, ret) in LIBHL_NATIVE_CALLS.iter().chain(OTHER_NATIVES.iter()) {
         signature.params = args.iter().map(|t| AbiParam::new(*t)).collect();
         signature.returns = ret.iter().map(|t| AbiParam::new(*t)).collect();
         let id = m
@@ -148,7 +151,7 @@ impl<'a> CodegenCtx<'a> {
         }
     }
 
-    pub fn compile(&mut self, code: Code) -> FuncId {
+    pub fn compile(&mut self, code: &Code) -> FuncId {
         data::declare(self.m, &code, &mut self.idxs).unwrap();
         build_native_calls(self.m, &mut self.idxs);
         data::define_types(self.m, &code, &mut self.idxs).unwrap();

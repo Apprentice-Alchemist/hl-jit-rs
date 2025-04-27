@@ -89,6 +89,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01667f6f40216b9a0b2945e05fed5f1ad0ab6470e69cb9378001e37b1c0668e4"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,17 +547,20 @@ dependencies = [
 name = "hl-jit"
 version = "0.1.0"
 dependencies = [
+ "ar_archive_writer",
  "backtrace",
  "bindgen",
  "cc",
  "clap",
  "cranelift",
+ "cranelift-codegen",
  "gimli",
  "hl-code",
  "hl-ffi",
  "hl-sys",
  "libc",
  "libloading",
+ "target-lexicon",
  "tempfile",
 ]
 

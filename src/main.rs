@@ -20,6 +20,7 @@ pub use hl_code as code;
 mod codegen;
 mod jit;
 mod object;
+mod stub;
 mod unwind;
 
 /// Hashlink JIT/AOT compiler
@@ -53,6 +54,9 @@ enum Compile {
         /// Link to executable
         #[arg(long)]
         link: bool,
+        /// Target
+        #[arg(long)]
+        target: Option<String>,
     },
 }
 
@@ -116,7 +120,13 @@ static mut SIGILL_EXC: vdynamic = vdynamic {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = Args::parse();
 
-    if let Some(Compile::Compile { file, output, link }) = args.compile {
+    if let Some(Compile::Compile {
+        file,
+        output,
+        link,
+        target,
+    }) = args.compile
+    {
         let code = hl_code::Code::from_file(&file).unwrap();
         println!("parsing done");
         let start = Instant::now();
@@ -127,36 +137,47 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "o"
             })
         });
-        let product = crate::object::compile_module(code, out_file.to_string_lossy().as_ref());
+        let (product, isa) =
+            crate::object::compile_module(&code, out_file.to_string_lossy().as_ref(), target);
         println!("compiling done in {:?}", start.elapsed());
         let start = Instant::now();
         let bytes = product.emit()?;
         if (!link) {
             std::fs::write(out_file, bytes)?;
         } else {
+            let stub_paths: Vec<tempfile::TempPath> =
+                stub::create_stubs(&code, isa.as_ref(), |name, bytes| {
+                    let mut file = tempfile::NamedTempFile::with_suffix(".tbd").unwrap();
+                    file.as_file_mut().write_all(&bytes).unwrap();
+                    file.into_temp_path()
+                });
+
             eprintln!("WARNING: linking to executable is experimental and will likely not work");
             let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
             file.as_file_mut().write_all(&bytes).unwrap();
             let path = file.into_temp_path();
             let mut command = std::process::Command::new("cc");
-            command.args([
-                "/usr/local/include/hlc_main.c",
-                "target/debug/libhl_ffi.a",
-                "-L",
-                "/usr/local/lib",
-                "/usr/local/lib/fmt.hdll",
-                "/usr/local/lib/ssl.hdll",
-                "-lhl",
-                "-lm",
-                path.to_str().unwrap(),
-                "-o",
-                format!("{}", out_file.file_name().unwrap().display()).as_str(),
-                "-Wl,-rpath,/usr/local/lib",
-                "-g",
-            ]);
+            command
+                .args([
+                    "/usr/local/include/hlc_main.c",
+                    "-L",
+                    "/usr/local/lib",
+                    "-L",
+                    "target/debug",
+                    "-lhl_ffi",
+                    "-lhl",
+                    "-lm",
+                    "-o",
+                    format!("{}", out_file.file_name().unwrap().display()).as_str(),
+                    "-Wl,-rpath,/usr/local/lib",
+                    "-g",
+                ])
+                .args(&stub_paths)
+                .arg(path.to_str().unwrap());
 
             if !command.status().unwrap().success() {
-                panic!("failed to compile to executable");
+                eprintln!("failed to compile to executable");
+                std::process::exit(1);
             }
 
             println!(

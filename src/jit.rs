@@ -39,7 +39,7 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_m = JITModule::new(jit_b);
     let mut jit_m = crate::unwind::UnwindModule::new(jit_m, false);
     let mut ctx = CodegenCtx::new(&mut jit_m);
-    let entrypoint = ctx.compile(code);
+    let entrypoint = ctx.compile(&code);
     jit_m.finalize_definitions();
     (jit_m.module, entrypoint)
 }

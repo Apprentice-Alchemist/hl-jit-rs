@@ -25,6 +25,7 @@ cranelift = { version = "0.119.0", features = [
 	"native",
 	"object",
 ] }
+cranelift-codegen = { version = "0.119.0", features = ["all-native-arch"]}
 libloading = "0.8.6"
 hl-code = { path = "crates/hl-code" }
 hl-sys = { path = "crates/hl-sys" }
@@ -32,6 +33,8 @@ hl-ffi = { path = "crates/hl-ffi", optional = true }
 libc = "0.2.171"
 gimli = "0.31.1"
 tempfile = "3.19.0"
+target-lexicon = "0.13.2"
+ar_archive_writer = "0.4.2"
 
 [build-dependencies]
 bindgen = "0.71.1"
