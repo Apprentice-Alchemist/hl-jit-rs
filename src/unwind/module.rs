@@ -27,7 +27,7 @@ impl<T: Module> UnwindModule<T> {
         UnwindModule {
             module,
             unwind_context,
-            function_sizes: HashMap::new()
+            function_sizes: HashMap::new(),
         }
     }
 }
@@ -105,7 +105,8 @@ impl<T: Module> Module for UnwindModule<T> {
             .define_function_with_control_plane(func, ctx, ctrl_plane)?;
         self.unwind_context
             .add_function(func, ctx, self.module.isa());
-        self.function_sizes.insert(func, ctx.compiled_code().unwrap().code_info().total_size);
+        self.function_sizes
+            .insert(func, ctx.compiled_code().unwrap().code_info().total_size);
         Ok(())
     }
 

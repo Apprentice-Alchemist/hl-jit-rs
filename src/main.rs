@@ -1,5 +1,9 @@
 #![allow(unused, dead_code)]
 use clap::Parser;
+use hl_sys::{
+    hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32,
+    hl_type_kind_HF64, hl_type_kind_HFUN, hlt_bytes, vclosure, vdynamic, vdynamic__bindgen_ty_1,
+};
 use std::{
     error::Error,
     ffi::{CStr, CString, c_int, c_void},
@@ -10,9 +14,6 @@ use std::{
     str::FromStr,
     time::Instant,
 };
-use hl_sys::{
-    hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32, hl_type_kind_HF64, hl_type_kind_HFUN, hlt_bytes, vclosure, vdynamic, vdynamic__bindgen_ty_1
-};
 
 pub use hl_code as code;
 
@@ -21,19 +22,38 @@ mod jit;
 mod object;
 mod unwind;
 
-/// Hashlink JIT compiler
+/// Hashlink JIT/AOT compiler
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, args_conflicts_with_subcommands = true)]
 struct Args {
-    /// Compile to object file
-    #[arg(short, long)]
-    output: Option<String>,
+    #[command(subcommand)]
+    compile: Option<Compile>,
 
-    /// File containing HL bytecode
-    file: String,
+    #[command(flatten)]
+    run: Run,
+}
 
+#[derive(Debug, clap::Args)]
+struct Run {
+    /// Bytecode file to execute
+    file: Option<String>,
     /// Program arguments
     args: Vec<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Compile {
+    /// Compile to object file
+    Compile {
+        /// File containing HL bytecode
+        file: PathBuf,
+        /// Output file name
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Link to executable
+        #[arg(long)]
+        link: bool,
+    },
 }
 
 extern "C" fn resolve_symbol(addr: *mut c_void, out: *mut u16, out_size: *mut c_int) -> *mut u16 {
@@ -59,7 +79,10 @@ extern "C" fn resolve_symbol(addr: *mut c_void, out: *mut u16, out_size: *mut c_
 extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
     let mut pos = 0;
     if stack.is_null() {
-        backtrace::trace(|_| { pos += 1; true });
+        backtrace::trace(|_| {
+            pos += 1;
+            true
+        });
     } else {
         backtrace::trace(|frame| {
             unsafe {
@@ -71,16 +94,80 @@ extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
     }
     pos
 }
+// "Null Access" in UTF-16
+static NULL_ACCESS_BYTES: &[u8] = b"N\0u\0l\0l\0 \0A\0c\0c\0e\0s\0s\0\0\0";
+// "SIGILL" in UTF-16
+static SIGILL_BYTES: &[u8] = b"S\0I\0G\0I\0L\0L\0\0\0";
+
+static mut NULL_ACCESS_EXC: vdynamic = vdynamic {
+    t: &raw mut hlt_bytes,
+    v: vdynamic__bindgen_ty_1 {
+        bytes: NULL_ACCESS_BYTES.as_ptr().cast_mut(),
+    },
+};
+
+static mut SIGILL_EXC: vdynamic = vdynamic {
+    t: &raw mut hlt_bytes,
+    v: vdynamic__bindgen_ty_1 {
+        bytes: SIGILL_BYTES.as_ptr().cast_mut(),
+    },
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = Args::parse();
-    let code = hl_code::Code::from_file(&args.file).unwrap();
-    println!("parsing done");
-    if let Some(ref output) = args.output {
-        let product = crate::object::compile_module(code);
+
+    if let Some(Compile::Compile { file, output, link }) = args.compile {
+        let code = hl_code::Code::from_file(&file).unwrap();
+        println!("parsing done");
+        let start = Instant::now();
+        let out_file = output.unwrap_or_else(|| {
+            file.with_extension(if link {
+                std::env::consts::EXE_EXTENSION
+            } else {
+                "o"
+            })
+        });
+        let product = crate::object::compile_module(code, out_file.to_string_lossy().as_ref());
+        println!("compiling done in {:?}", start.elapsed());
+        let start = Instant::now();
         let bytes = product.emit()?;
-        std::fs::write(output, bytes);
+        if (!link) {
+            std::fs::write(out_file, bytes)?;
+        } else {
+            eprintln!("WARNING: linking to executable is experimental and will likely not work");
+            let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
+            file.as_file_mut().write_all(&bytes).unwrap();
+            let path = file.into_temp_path();
+            let mut command = std::process::Command::new("cc");
+            command.args([
+                "/usr/local/include/hlc_main.c",
+                "target/debug/libhl_ffi.a",
+                "-L",
+                "/usr/local/lib",
+                "/usr/local/lib/fmt.hdll",
+                "/usr/local/lib/ssl.hdll",
+                "-lhl",
+                "-lm",
+                path.to_str().unwrap(),
+                "-o",
+                format!("{}", out_file.file_name().unwrap().display()).as_str(),
+                "-Wl,-rpath,/usr/local/lib",
+                "-g",
+            ]);
+
+            if !command.status().unwrap().success() {
+                panic!("failed to compile to executable");
+            }
+
+            println!(
+                "writing and native compilation done in {:?}",
+                start.elapsed()
+            );
+        }
     } else {
+        let file = args.run.file.take().unwrap();
+        let code = hl_code::Code::from_file(&file).unwrap();
+        println!("parsing done");
         let start = Instant::now();
         let (m, entrypoint) = crate::jit::compile_module(code);
         println!("compiling done in {:?}", start.elapsed());
@@ -110,11 +197,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
             hl_sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());
             let mut args: Vec<&mut CStr> = args
+                .run
                 .args
                 .iter()
                 .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
                 .collect();
-            hl_sys::hl_sys_init(args.as_mut_ptr().cast(), args.len() as i32, null_mut());
+            let c_file = CString::from_str(&file).unwrap();
+            hl_sys::hl_sys_init(
+                args.as_mut_ptr().cast(),
+                args.len() as i32,
+                c_file.as_ptr().cast_mut().cast(),
+            );
+            extern "C" fn segv_handler(signum: c_int) {
+                if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                    unsafe {
+                        hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
+                    }
+                }
+            }
+            extern "C" fn sigill_handler(signum: c_int) {
+                if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                    unsafe {
+                        hl_sys::hl_throw(&raw mut SIGILL_EXC);
+                    }
+                }
+            }
+            libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
+            libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
+
             let mut is_exception = false;
 
             let __bindgen_anon_1 = hl_type__bindgen_ty_1 {

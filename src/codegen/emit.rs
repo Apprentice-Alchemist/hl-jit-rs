@@ -1134,7 +1134,10 @@ impl<'a> EmitCtx<'a> {
                     match self.reg_type(mem) {
                         HLType::Abstract(_) => {
                             // CArray
-                            assert!(matches!(self.reg_type(dst), HLType::Object(_) | HLType::Struct(_)));
+                            assert!(matches!(
+                                self.reg_type(dst),
+                                HLType::Object(_) | HLType::Struct(_)
+                            ));
                             let arr_addr = self.load_reg(mem);
                             let offset = self.load_reg(offset);
                             let offset = self.ins().uextend(types::I64, offset);

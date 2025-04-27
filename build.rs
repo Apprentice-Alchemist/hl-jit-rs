@@ -7,7 +7,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .compile("ffi_callbacks");
         println!("cargo::rustc-link-lib=ffi");
     }
-    println!("cargo::rustc-link-search=/usr/local/lib");
     println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/local/lib");
     Ok(())
 }

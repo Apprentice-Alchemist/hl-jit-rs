@@ -2,8 +2,8 @@
 // taken from rustc_codegen_cranelift
 
 pub(crate) mod emit;
-pub(crate) mod object;
 pub(crate) mod module;
+pub(crate) mod object;
 
 pub(crate) use module::UnwindModule;
 

@@ -10,3 +10,4 @@ compile_commands.json
 /.cargo
 profile.json.gz
 main
+bin
