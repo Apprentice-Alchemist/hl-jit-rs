@@ -113,10 +113,9 @@ impl<T: Module> Module for UnwindModule<T> {
     fn define_function_bytes(
         &mut self,
         _func_id: FuncId,
-        _function: &Function,
         _alignment: u64,
         _bytes: &[u8],
-        _relocs: &[FinalizedMachReloc],
+        _relocs: &[ModuleReloc],
     ) -> ModuleResult<()> {
         unimplemented!()
     }

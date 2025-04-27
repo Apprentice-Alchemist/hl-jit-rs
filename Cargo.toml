@@ -19,7 +19,7 @@ libffi = []
 [dependencies]
 backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
-cranelift = { version = "0.118.0", features = [
+cranelift = { version = "0.119.0", features = [
 	"jit",
 	"module",
 	"native",
