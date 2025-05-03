@@ -20,6 +20,8 @@ pub fn compile_module(
 ) -> (ObjectProduct, OwnedTargetIsa) {
     let mut builder = settings::builder();
     builder.set("is_pic", "true");
+    builder.set("regalloc_algorithm", "backtracking");
+    builder.set("opt_level", "speed");
     let flags = Flags::new(builder);
     let isa_builder = if let Some(target) = target {
         cranelift::codegen::isa::lookup(Triple::from_str(&target).unwrap()).unwrap()
@@ -31,6 +33,6 @@ pub fn compile_module(
     let mut module = UnwindModule::new(ObjectModule::new(mod_builder), true);
 
     let mut ctx = CodegenCtx::new(&mut module);
-    let entrypoint = ctx.compile(code);
+    let entrypoint = ctx.compile(code, true);
     (module.finish(), isa)
 }

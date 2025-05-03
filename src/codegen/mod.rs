@@ -3,9 +3,12 @@ use std::error::Error;
 use std::mem::offset_of;
 
 use cranelift::codegen::Context;
+use cranelift::codegen::ir;
 use cranelift::module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use cranelift::prelude::*;
 use hl_code::NativeFun;
+use hl_sys::hl_thread_info;
+use hl_sys::hl_trap_ctx;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
 use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
@@ -100,6 +103,17 @@ pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_get_thread", &[], &[types::I64]),
     ("hl_dyn_compare", &[types::I64, types::I64], &[types::I32]),
     ("hl_same_type", &[types::I64, types::I64], &[types::I8]),
+    ("hl_global_init", &[], &[]),
+    ("hl_global_free", &[], &[]),
+    ("hl_register_thread", &[types::I64], &[]),
+    ("hl_sys_init", &[types::I64, types::I32, types::I64], &[]),
+    ("hl_print_exception_with_stack", &[types::I64], &[]),
+    ("hl_setup_callbacks", &[types::I64, types::I64], &[]),
+    ("hlc_static_call", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]),
+    ("hlc_get_wrapper", &[types::I64], &[types::I64]),
+    ("hl_setup_exception", &[types::I64, types::I64], &[]),
+    ("hlc_resolve_symbol", &[types::I64, types::I64, types::I64], &[types::I64]),
+    ("hlc_capture_stack", &[types::I64, types::I32], &[types::I32]),
 ];
 
 static OTHER_NATIVES: &[(&str, &[Type], &[Type])] = &[
@@ -151,7 +165,7 @@ impl<'a> CodegenCtx<'a> {
         }
     }
 
-    pub fn compile(&mut self, code: &Code) -> FuncId {
+    pub fn compile(&mut self, code: &Code, generate_main: bool) -> FuncId {
         data::declare(self.m, &code, &mut self.idxs).unwrap();
         build_native_calls(self.m, &mut self.idxs);
         data::define_types(self.m, &code, &mut self.idxs).unwrap();
@@ -185,7 +199,161 @@ impl<'a> CodegenCtx<'a> {
             emit::emit_fun(self, &code, fun);
         }
         data::define_module_context(&mut self.m, &code, &mut self.idxs);
-        self.emit_entrypoint(&code)
+        let entrypoint_id = self.emit_entrypoint(&code);
+        if generate_main {
+            self.emit_main(&code, entrypoint_id);
+        }
+        entrypoint_id
+    }
+
+    fn emit_main(&mut self, code: &Code, entrypoint_id: FuncId) -> FuncId {
+        let mut sig = self.m.make_signature();
+        sig.params.push(AbiParam::new(types::I32));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I32));
+        let fun_id = self
+            .m
+            .declare_function("main", Linkage::Export, &sig)
+            .unwrap();
+        self.m.clear_context(&mut self.ctx);
+        let mut bcx = FunctionBuilder::new(&mut self.ctx.func, &mut self.f_ctx);
+        bcx.func.signature = sig;
+        let entry_block = bcx.create_block();
+        bcx.append_block_params_for_function_params(entry_block);
+        bcx.seal_block(entry_block);
+        bcx.switch_to_block(entry_block);
+
+        let dummy_slot = bcx.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            size_of::<bool>() as u32,
+            1,
+        ));
+
+        let hl_global_init_id = self.idxs.native_calls["hl_global_init"];
+        let hl_global_init_ref = self.m.declare_func_in_func(hl_global_init_id, bcx.func);
+        bcx.ins().call(hl_global_init_ref, &[]);
+
+        let hlc_static_call_id = self.idxs.native_calls["hlc_static_call"];
+        let hlc_static_call_ref = self.m.declare_func_in_func(hlc_static_call_id, bcx.func);
+        let hlc_static_call_val = bcx.ins().func_addr(types::I64, hlc_static_call_ref);
+        let hlc_get_wrapper_id = self.idxs.native_calls["hlc_get_wrapper"];
+        let hlc_get_wrapper_ref = self.m.declare_func_in_func(hlc_get_wrapper_id, bcx.func);
+        let hlc_get_wrapper_val = bcx.ins().func_addr(types::I64, hlc_get_wrapper_ref);
+        let hl_setup_callbacks_id = self.idxs.native_calls["hl_setup_callbacks"];
+        let hl_setup_callbacks_ref = self.m.declare_func_in_func(hl_setup_callbacks_id, bcx.func);
+        bcx.ins().call(hl_setup_callbacks_ref, &[hlc_static_call_val, hlc_get_wrapper_val]);
+
+        // let hlc_resolve_symbol_id = self.idxs.native_calls["hlc_resolve_symbol"];
+        // let hlc_resolve_symbol_ref = self.m.declare_func_in_func(hlc_resolve_symbol_id, bcx.func);
+        // let hlc_resolve_symbol_val = bcx.ins().func_addr(types::I64, hlc_resolve_symbol_ref);
+        // let hlc_capture_stack_id = self.idxs.native_calls["hlc_capture_stack"];
+        // let hlc_capture_stack_ref = self.m.declare_func_in_func(hlc_capture_stack_id, bcx.func);
+        // let hlc_capture_stack_val = bcx.ins().func_addr(types::I64, hlc_get_wrapper_ref);
+        // let hl_setup_exception_id = self.idxs.native_calls["hl_setup_exception"];
+        // let hl_setup_exception_ref = self.m.declare_func_in_func(hl_setup_exception_id, bcx.func);
+        // bcx.ins().call(hl_setup_exception_ref, &[hlc_resolve_symbol_val, hlc_capture_stack_val]);
+
+        let hl_register_thread_id = self.idxs.native_calls["hl_register_thread"];
+        let hl_register_thread_ref = self.m.declare_func_in_func(hl_register_thread_id, bcx.func);
+        let stack_top = bcx.ins().stack_addr(types::I64, dummy_slot, 0);
+        bcx.ins().call(hl_register_thread_ref, &[stack_top]);
+
+        let hl_sys_init_id = self.idxs.native_calls["hl_sys_init"];
+        let hl_sys_init_ref = self.m.declare_func_in_func(hl_sys_init_id, bcx.func);
+
+        let argc = bcx.block_params(entry_block)[0];
+        let argv = bcx.block_params(entry_block)[1];
+        let argv = bcx.ins().iadd_imm(argv, 8);
+        let argc = bcx.ins().iadd_imm(argc, -1);
+        let zero = bcx.ins().iconst(types::I64, 0);
+        bcx.ins().call(hl_sys_init_ref, &[argv, argc, zero]);
+
+        let hl_get_thread_id = self.idxs.native_calls["hl_get_thread"];
+        let hl_get_thread_ref = self.m.declare_func_in_func(hl_get_thread_id, bcx.func);
+        let setjmp_id = self.idxs.native_calls["setjmp"];
+        let setjmp_ref = self.m.declare_func_in_func(setjmp_id, bcx.func);
+
+        let end_block = bcx.create_block();
+        bcx.append_block_param(end_block, types::I32);
+
+        {
+            let slot = bcx.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size_of::<hl_trap_ctx>() as u32,
+                3,
+            ));
+            let zero = bcx.ins().iconst(types::I64, 0);
+            bcx.ins()
+                .stack_store(zero, slot, offset_of!(hl_trap_ctx, tcheck) as i32);
+
+            let tinf = {
+                let inst = bcx.ins().call(hl_get_thread_ref, &[]);
+                bcx.inst_results(inst)[0]
+            };
+
+            let trap_current = bcx.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                tinf,
+                offset_of!(hl_thread_info, trap_current) as i32,
+            );
+            bcx.ins()
+                .stack_store(trap_current, slot, offset_of!(hl_trap_ctx, prev) as i32);
+            let ctx_addr = bcx.ins().stack_addr(types::I64, slot, 0);
+            bcx.ins().store(
+                MemFlags::trusted(),
+                ctx_addr,
+                tinf,
+                offset_of!(hl_thread_info, trap_current) as i32,
+            );
+
+            let env = bcx
+                .ins()
+                .stack_addr(types::I64, slot, offset_of!(hl_trap_ctx, buf) as i32);
+            let exc_block = bcx.create_block();
+
+            let call_block = bcx.create_block();
+
+            let setjmp_inst = bcx.ins().call(setjmp_ref, &[env]);
+            let r = bcx.inst_results(setjmp_inst)[0];
+            bcx.ins().brif(r, exc_block, &[], call_block, &[]);
+            bcx.seal_block(call_block);
+            bcx.switch_to_block(call_block);
+
+            let entrypoint_ref = self.m.declare_func_in_func(entrypoint_id, bcx.func);
+            bcx.ins().call(entrypoint_ref, &[]);
+
+            let zero = bcx.ins().iconst(types::I32, 0);
+            bcx.ins().jump(end_block, &[zero.into()]);
+
+            bcx.switch_to_block(exc_block);
+            let exc_value = bcx.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                tinf,
+                offset_of!(hl_thread_info, exc_value) as i32,
+            );
+
+            let hl_print_exception_id = self.idxs.native_calls["hl_print_exception_with_stack"];
+            let hl_print_exception_ref =
+                self.m.declare_func_in_func(hl_print_exception_id, bcx.func);
+            bcx.ins().call(hl_print_exception_ref, &[exc_value]);
+
+            let ret = bcx.ins().iconst(types::I32, 1);
+            bcx.ins().jump(end_block, &[ret.into()]);
+            bcx.seal_block(exc_block);
+        }
+        bcx.seal_block(end_block);
+        bcx.switch_to_block(end_block);
+
+        let hl_global_free_id = self.idxs.native_calls["hl_global_free"];
+        let hl_global_free_ref = self.m.declare_func_in_func(hl_global_free_id, bcx.func);
+        bcx.ins().call(hl_global_free_ref, &[]);
+        let rval = bcx.block_params(end_block)[0];
+        bcx.ins().return_(&[rval]);
+        bcx.finalize();
+        self.m.define_function(fun_id, &mut self.ctx).unwrap();
+        fun_id
     }
 
     fn emit_entrypoint(&mut self, code: &Code) -> FuncId {

@@ -1,5 +1,5 @@
 #![allow(unused, dead_code)]
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use hl_sys::{
     hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32,
     hl_type_kind_HF64, hl_type_kind_HFUN, hlt_bytes, vclosure, vdynamic, vdynamic__bindgen_ty_1,
@@ -14,6 +14,7 @@ use std::{
     str::FromStr,
     time::Instant,
 };
+use target_lexicon::OperatingSystem;
 
 pub use hl_code as code;
 
@@ -27,6 +28,9 @@ mod unwind;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None, args_conflicts_with_subcommands = true)]
 struct Args {
+    /// Print timings for compilation phases
+    #[arg(global = true, long)]
+    timings: bool,
     #[command(subcommand)]
     compile: Option<Compile>,
 
@@ -130,28 +134,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         let code = hl_code::Code::from_file(&file).unwrap();
         println!("parsing done");
         let start = Instant::now();
-        let out_file = output.unwrap_or_else(|| {
-            file.with_extension(if link {
-                std::env::consts::EXE_EXTENSION
-            } else {
-                "o"
-            })
-        });
+
         let (product, isa) =
-            crate::object::compile_module(&code, out_file.to_string_lossy().as_ref(), target);
+            crate::object::compile_module(&code, file.to_string_lossy().as_ref(), target);
         println!("compiling done in {:?}", start.elapsed());
         let start = Instant::now();
         let bytes = product.emit()?;
         if (!link) {
+            let out_file = output.unwrap_or_else(|| file.with_extension("o"));
             std::fs::write(out_file, bytes)?;
         } else {
             let stub_paths: Vec<tempfile::TempPath> =
                 stub::create_stubs(&code, isa.as_ref(), |name, bytes| {
-                    let mut file = tempfile::NamedTempFile::with_suffix(".tbd").unwrap();
+                    let mut file = tempfile::NamedTempFile::new().unwrap();
                     file.as_file_mut().write_all(&bytes).unwrap();
                     file.into_temp_path()
                 });
 
+            let out_file = output.unwrap_or_else(|| {
+                file.with_extension(
+                    if isa.triple().operating_system == OperatingSystem::Windows {
+                        "exe"
+                    } else {
+                        ""
+                    },
+                )
+            });
             eprintln!("WARNING: linking to executable is experimental and will likely not work");
             let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
             file.as_file_mut().write_all(&bytes).unwrap();
@@ -159,11 +167,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut command = std::process::Command::new("cc");
             command
                 .args([
-                    "/usr/local/include/hlc_main.c",
                     "-L",
                     "/usr/local/lib",
                     "-L",
                     "target/debug",
+                    // order is, unfortunately, relevant when GNU ld is used
+                    path.to_str().unwrap(),
                     "-lhl_ffi",
                     "-lhl",
                     "-lm",
@@ -172,8 +181,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "-Wl,-rpath,/usr/local/lib",
                     "-g",
                 ])
-                .args(&stub_paths)
-                .arg(path.to_str().unwrap());
+                .args(&stub_paths);
 
             if !command.status().unwrap().success() {
                 eprintln!("failed to compile to executable");
@@ -186,7 +194,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
     } else {
-        let file = args.run.file.take().unwrap();
+        let file = args.run.file.unwrap_or_else(|| {
+            Args::command().print_help().unwrap();
+            std::process::exit(0);
+        });
         let code = hl_code::Code::from_file(&file).unwrap();
         println!("parsing done");
         let start = Instant::now();
@@ -216,7 +227,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 hlc_get_wrapper as *mut c_void,
             );
             hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
-            hl_sys::hl_register_thread(core::ptr::from_mut(&mut args).cast());
+            let mut stack_top = 0u8;
+            hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
             let mut args: Vec<&mut CStr> = args
                 .run
                 .args
@@ -243,8 +255,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
-            libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
+            // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
+            // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
 
             let mut is_exception = false;
 
