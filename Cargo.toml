@@ -35,6 +35,7 @@ gimli = "0.31.1"
 tempfile = "3.19.0"
 target-lexicon = "0.13.2"
 ar_archive_writer = "0.4.2"
+clap_complete = { version = "4.5.48", features = ["unstable-dynamic"] }
 
 [build-dependencies]
 bindgen = "0.71.1"

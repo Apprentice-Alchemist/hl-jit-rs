@@ -66,7 +66,7 @@ impl Reader {
     pub fn vec<T>(
         &mut self,
         count: usize,
-        read_fn: impl Fn(&mut Reader) -> io::Result<T>,
+        mut read_fn: impl FnMut(&mut Reader) -> io::Result<T>,
     ) -> io::Result<Vec<T>> {
         let mut v = Vec::with_capacity(count);
         for _ in 0..count {
@@ -363,7 +363,15 @@ impl Readable for Code {
             let nregs = r.udx()?;
             let nops = r.udx()?;
             let regs = r.vec(nregs, Reader::r)?;
-            let opcodes = r.vec(nops, Reader::r)?;
+            let mut static_closures = Vec::new();
+            let opcodes = r.vec(nops, |r| {
+                let op = Reader::r(r)?;
+                match op {
+                    crate::OpCode::StaticClosure { dst: _, fid } => static_closures.push(fid),
+                    _ => ()
+                }
+                Ok(op)
+             })?;
             if let Some(ref debugfiles) = debugfiles {
                 let mut i = 0;
                 let mut debug = Vec::new();
@@ -421,6 +429,7 @@ impl Readable for Code {
                 idx,
                 regs,
                 opcodes,
+                static_closures
             })
         })?;
         let constants = r.vec(nconstants, |r| {

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::error::Error;
 use std::mem::offset_of;
 
@@ -9,6 +10,7 @@ use cranelift::prelude::*;
 use hl_code::NativeFun;
 use hl_sys::hl_thread_info;
 use hl_sys::hl_trap_ctx;
+use hl_sys::vclosure;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
 use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
@@ -26,6 +28,7 @@ struct Indexes {
     globals: BTreeMap<GlobalIdx, DataId>,
     native_calls: BTreeMap<&'static str, FuncId>,
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
+    static_closures: BTreeMap<FunIdx, DataId>,
 }
 
 pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
@@ -107,19 +110,31 @@ pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
     ("hl_global_free", &[], &[]),
     ("hl_register_thread", &[types::I64], &[]),
     ("hl_sys_init", &[types::I64, types::I32, types::I64], &[]),
-    ("hl_print_exception_with_stack", &[types::I64], &[]),
     ("hl_setup_callbacks", &[types::I64, types::I64], &[]),
-    ("hlc_static_call", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]),
-    ("hlc_get_wrapper", &[types::I64], &[types::I64]),
     ("hl_setup_exception", &[types::I64, types::I64], &[]),
-    ("hlc_resolve_symbol", &[types::I64, types::I64, types::I64], &[types::I64]),
-    ("hlc_capture_stack", &[types::I64, types::I32], &[types::I32]),
+    ("hl_print_exception_with_stack", &[types::I64], &[]),
 ];
 
 static OTHER_NATIVES: &[(&str, &[Type], &[Type])] = &[
     ("fmod", &[types::F64, types::F64], &[types::F64]),
     ("fmodf", &[types::F32, types::F32], &[types::F32]),
     ("setjmp", &[types::I64], &[types::I32]),
+    (
+        "hlc_static_call",
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    ),
+    ("hlc_get_wrapper", &[types::I64], &[types::I64]),
+    (
+        "hlc_resolve_symbol",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    ),
+    (
+        "hlc_capture_stack",
+        &[types::I64, types::I32],
+        &[types::I32],
+    ),
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
@@ -137,14 +152,11 @@ fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
 
 pub struct CodegenCtx<'a> {
     m: &'a mut dyn Module,
-    f_ctx: FunctionBuilderContext,
-    ctx: Context,
     idxs: Indexes,
 }
 
 impl<'a> CodegenCtx<'a> {
     pub fn new(m: &'a mut dyn Module) -> Self {
-        let ctx = m.make_context();
         let module_context_id = m.declare_anonymous_data(true, false).unwrap();
         let idxs = Indexes {
             module_context_id,
@@ -156,13 +168,9 @@ impl<'a> CodegenCtx<'a> {
             globals: Default::default(),
             native_calls: Default::default(),
             hash_locations: Default::default(),
+            static_closures: Default::default(),
         };
-        Self {
-            m,
-            f_ctx: FunctionBuilderContext::new(),
-            ctx,
-            idxs,
-        }
+        Self { m, idxs }
     }
 
     pub fn compile(&mut self, code: &Code, generate_main: bool) -> FuncId {
@@ -196,6 +204,24 @@ impl<'a> CodegenCtx<'a> {
             self.idxs.fn_type_map.insert(fun, ty);
         }
         for fun in code.functions.iter() {
+            for fid in fun.static_closures.iter() {
+                let func_id = self.idxs.fn_map[fid];
+
+                let id = self.m.declare_anonymous_data(false, false).unwrap();
+                let mut data = DataDescription::new();
+                data.define(vec![0u8; size_of::<vclosure>()].into_boxed_slice());
+
+                let ty_id = self.m.declare_data_in_data(
+                    self.idxs.types[self.idxs.fn_type_map[&fid].0],
+                    &mut data,
+                );
+                data.write_data_addr(0, ty_id, 0);
+                let fn_id = self.m.declare_func_in_data(func_id, &mut data);
+                data.write_function_addr(8, fn_id);
+
+                self.m.define_data(id, &data).unwrap();
+                self.idxs.static_closures.insert(*fid, id);
+            }
             emit::emit_fun(self, &code, fun);
         }
         data::define_module_context(&mut self.m, &code, &mut self.idxs);
@@ -215,8 +241,9 @@ impl<'a> CodegenCtx<'a> {
             .m
             .declare_function("main", Linkage::Export, &sig)
             .unwrap();
-        self.m.clear_context(&mut self.ctx);
-        let mut bcx = FunctionBuilder::new(&mut self.ctx.func, &mut self.f_ctx);
+        let mut ctx = self.m.make_context();
+        let mut f_ctx = FunctionBuilderContext::new();
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut f_ctx);
         bcx.func.signature = sig;
         let entry_block = bcx.create_block();
         bcx.append_block_params_for_function_params(entry_block);
@@ -241,7 +268,10 @@ impl<'a> CodegenCtx<'a> {
         let hlc_get_wrapper_val = bcx.ins().func_addr(types::I64, hlc_get_wrapper_ref);
         let hl_setup_callbacks_id = self.idxs.native_calls["hl_setup_callbacks"];
         let hl_setup_callbacks_ref = self.m.declare_func_in_func(hl_setup_callbacks_id, bcx.func);
-        bcx.ins().call(hl_setup_callbacks_ref, &[hlc_static_call_val, hlc_get_wrapper_val]);
+        bcx.ins().call(
+            hl_setup_callbacks_ref,
+            &[hlc_static_call_val, hlc_get_wrapper_val],
+        );
 
         // let hlc_resolve_symbol_id = self.idxs.native_calls["hlc_resolve_symbol"];
         // let hlc_resolve_symbol_ref = self.m.declare_func_in_func(hlc_resolve_symbol_id, bcx.func);
@@ -352,7 +382,7 @@ impl<'a> CodegenCtx<'a> {
         let rval = bcx.block_params(end_block)[0];
         bcx.ins().return_(&[rval]);
         bcx.finalize();
-        self.m.define_function(fun_id, &mut self.ctx).unwrap();
+        self.m.define_function(fun_id, &mut ctx).unwrap();
         fun_id
     }
 
@@ -362,8 +392,9 @@ impl<'a> CodegenCtx<'a> {
             .m
             .declare_function("hl_entry_point", Linkage::Export, &sig)
             .unwrap();
-        self.m.clear_context(&mut self.ctx);
-        let mut bcx = FunctionBuilder::new(&mut self.ctx.func, &mut self.f_ctx);
+        let mut ctx = self.m.make_context();
+        let mut f_ctx = FunctionBuilderContext::new();
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut f_ctx);
         let entry_block = bcx.create_block();
         bcx.seal_block(entry_block);
         bcx.switch_to_block(entry_block);
@@ -432,7 +463,7 @@ impl<'a> CodegenCtx<'a> {
         bcx.ins().call(f_ref, &[]);
         bcx.ins().return_(&[]);
         bcx.finalize();
-        self.m.define_function(fun_id, &mut self.ctx).unwrap();
+        self.m.define_function(fun_id, &mut ctx).unwrap();
         fun_id
     }
 }

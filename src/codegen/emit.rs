@@ -1,12 +1,18 @@
 use std::alloc::Layout;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::c_int;
 use std::{collections::BTreeMap, mem::offset_of};
 
 use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, UserFuncName, ValueListPool};
 use cranelift::frontend::Switch;
-use cranelift::module::DataDescription;
+use cranelift::module::{DataDescription, DataId, FuncId};
 use cranelift::prelude::*;
-use cranelift::{codegen::ir::StackSlot, module::Module};
+use cranelift::{
+    codegen::{ir, ir::StackSlot},
+    module::Module,
+};
+use cranelift_codegen::Context;
 use hl_code::FunIdx;
 
 use crate::code::TypeFun;
@@ -16,24 +22,55 @@ use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, v
 
 use super::{CodegenCtx, Indexes};
 
-pub fn emit_fun(ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
-    let mut emit_ctx = EmitCtx::new(ctx, code, fun);
-    emit_ctx.translate_body();
-    emit_ctx.finish();
-    if let Err(e) = ctx
-        .m
-        .define_function(ctx.idxs.fn_map[&fun.idx], &mut ctx.ctx)
+fn declare_func_in_func(
+    this: &dyn Module,
+    func_id: FuncId,
+    func: &mut ir::Function,
+) -> ir::FuncRef {
+    let decl = this.declarations().get_function_decl(func_id);
+    let signature = func.import_signature(decl.signature.clone());
+    let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
+        namespace: 0,
+        index: func_id.as_u32(),
+    });
+    let colocated = decl.linkage.is_final();
+    func.import_function(ir::ExtFuncData {
+        name: ir::ExternalName::user(user_name_ref),
+        signature,
+        colocated,
+    })
+}
+
+thread_local! {
+    static F_CTX: RefCell<FunctionBuilderContext> = RefCell::new(FunctionBuilderContext::new());
+    static CTX: RefCell<Context> = RefCell::new(Context::new());
+}
+
+pub fn emit_fun(c_ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
     {
-        match e {
-            cranelift::module::ModuleError::Compilation(e) => {
-                eprintln!(
-                    "{}",
-                    cranelift::codegen::print_errors::pretty_error(&ctx.ctx.func, e)
-                );
-                std::process::exit(1);
-            }
-            _ => panic!("{e:?}"),
-        }
+        F_CTX.with_borrow_mut(|f_ctx| {
+            CTX.with_borrow_mut(|ctx| {
+                c_ctx.m.clear_context(ctx);
+                let mut emit_ctx = EmitCtx::new(c_ctx, code, fun, ctx, f_ctx);
+                emit_ctx.translate_body();
+                emit_ctx.finish();
+                if let Err(e) = c_ctx
+                    .m
+                    .define_function(c_ctx.idxs.fn_map[&fun.idx], ctx)
+                {
+                    match e {
+                        cranelift::module::ModuleError::Compilation(e) => {
+                            eprintln!(
+                                "{}",
+                                cranelift::codegen::print_errors::pretty_error(&ctx.func, e)
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => panic!("{e:?}"),
+                    }
+                }
+            });
+        });
     }
 }
 
@@ -43,7 +80,7 @@ struct ObjLayout {
 }
 
 struct EmitCtx<'a> {
-    m: &'a mut dyn Module,
+    m: &'a dyn Module,
     code: &'a Code,
     idxs: &'a Indexes,
     fun: &'a HLFunction,
@@ -71,15 +108,18 @@ impl<'a> std::ops::DerefMut for EmitCtx<'a> {
 }
 
 impl<'a> EmitCtx<'a> {
-    pub fn new(c_ctx: &'a mut CodegenCtx, code: &'a Code, fun: &'a HLFunction) -> EmitCtx<'a> {
+    pub fn new(
+        c_ctx: &'a CodegenCtx,
+        code: &'a Code,
+        fun: &'a HLFunction,
+        ctx: &'a mut Context,
+        f_ctx: &'a mut FunctionBuilderContext,
+    ) -> EmitCtx<'a> {
         let CodegenCtx {
             m,
-            f_ctx,
-            ctx,
             idxs,
+            ..
         } = c_ctx;
-
-        m.clear_context(ctx);
 
         let function_signature = m
             .declarations()
@@ -132,8 +172,8 @@ impl<'a> EmitCtx<'a> {
             builder,
             blocks,
             pos: 0,
-            obj_layouts: BTreeMap::new(),
-            enum_offsets: BTreeMap::new(),
+            obj_layouts: Default::default(),
+            enum_offsets: Default::default(),
             regs,
         }
     }
@@ -669,22 +709,7 @@ impl<'a> EmitCtx<'a> {
                     }
                 }
                 OpCode::StaticClosure { dst, fid } => {
-                    let func_id = self.idxs.fn_map[fid];
-
-                    let id = self.m.declare_anonymous_data(false, false).unwrap();
-                    let mut data = DataDescription::new();
-                    data.define(vec![0u8; size_of::<vclosure>()].into_boxed_slice());
-
-                    let ty_id = self.m.declare_data_in_data(
-                        self.idxs.types[self.idxs.fn_type_map[&fid].0],
-                        &mut data,
-                    );
-                    data.write_data_addr(0, ty_id, 0);
-                    let fn_id = self.m.declare_func_in_data(func_id, &mut data);
-                    data.write_function_addr(8, fn_id);
-
-                    self.m.define_data(id, &data).unwrap();
-
+                    let id = self.idxs.static_closures[fid];
                     let gv = self.m.declare_data_in_func(id, self.builder.func);
                     let val = self.ins().global_value(types::I64, gv);
                     self.store_reg(dst, val);
@@ -694,7 +719,7 @@ impl<'a> EmitCtx<'a> {
                     let ty_id = self.idxs.fn_type_map[idx];
                     let ty_val = self.type_val(ty_id);
                     let func_id = self.idxs.fn_map[idx];
-                    let func_ref = self.m.declare_func_in_func(func_id, self.builder.func);
+                    let func_ref = declare_func_in_func(self.m, func_id, self.builder.func);
                     let func_addr = self.ins().func_addr(types::I64, func_ref);
                     let obj_val = self.load_reg(obj);
                     let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
@@ -1535,9 +1560,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn emit_call(&mut self, dst: &Reg, f: &FunIdx, args: &[Reg]) {
-        let f_ref = self
-            .m
-            .declare_func_in_func(self.idxs.fn_map[f], self.builder.func);
+        let f_ref = declare_func_in_func(self.m, self.idxs.fn_map[f], self.builder.func);
         let args = &args
             .iter()
             .map(|r| self.load_reg(r))
@@ -1615,8 +1638,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn native_fun(&mut self, name: &str) -> FuncRef {
-        self.m
-            .declare_func_in_func(self.idxs.native_calls[name], self.builder.func)
+        declare_func_in_func(self.m, self.idxs.native_calls[name], self.builder.func)
     }
 
     fn hash(&mut self, field_name: &UStrIdx) -> Value {
@@ -1758,9 +1780,8 @@ impl<'a> EmitCtx<'a> {
                         a_val_orig,
                         b_val_orig,
                     );
-                    let f_ref = self
-                        .m
-                        .declare_func_in_func(self.idxs.fn_map[&fun_idx], self.builder.func);
+                    let f_ref =
+                        declare_func_in_func(self.m, self.idxs.fn_map[&fun_idx], self.builder.func);
                     let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
                     let cmp_val = self.inst_results(inst)[0];
                     let val = self.ins().icmp_imm(int_cc, cmp_val, 0);

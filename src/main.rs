@@ -40,6 +40,9 @@ struct Args {
 
 #[derive(Debug, clap::Args)]
 struct Run {
+    /// Compile but don't run
+    #[arg(long)]
+    no_jit: bool,
     /// Bytecode file to execute
     file: Option<String>,
     /// Program arguments
@@ -122,6 +125,7 @@ static mut SIGILL_EXC: vdynamic = vdynamic {
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
+    clap_complete::env::CompleteEnv::with_factory(Args::command).complete();
     let mut args = Args::parse();
 
     if let Some(Compile::Compile {
@@ -203,101 +207,105 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
         let (m, entrypoint) = crate::jit::compile_module(code);
         println!("compiling done in {:?}", start.elapsed());
-
-        #[cfg(not(feature = "hl-ffi"))]
-        unsafe extern "C" {
-            unsafe fn hlc_static_call(
-                fun: *mut c_void,
-                ft: *mut hl_type,
-                args: *mut *mut c_void,
-                out: *mut vdynamic,
-            ) -> *mut c_void;
-            unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
-        }
-        unsafe {
-            hl_sys::hl_global_init();
-            #[cfg(feature = "hl-ffi")]
-            hl_sys::hl_setup_callbacks(
-                hl_ffi::static_call as *mut c_void,
-                hl_ffi::get_wrapper as *mut c_void,
-            );
+        if !args.run.no_jit {
             #[cfg(not(feature = "hl-ffi"))]
-            hl_sys::hl_setup_callbacks(
-                hlc_static_call as *mut c_void,
-                hlc_get_wrapper as *mut c_void,
-            );
-            hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
-            let mut stack_top = 0u8;
-            hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
-            let mut args: Vec<&mut CStr> = args
-                .run
-                .args
-                .iter()
-                .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
-                .collect();
-            let c_file = CString::from_str(&file).unwrap();
-            hl_sys::hl_sys_init(
-                args.as_mut_ptr().cast(),
-                args.len() as i32,
-                c_file.as_ptr().cast_mut().cast(),
-            );
-            extern "C" fn segv_handler(signum: c_int) {
-                if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                    unsafe {
-                        hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
-                    }
-                }
+            unsafe extern "C" {
+                unsafe fn hlc_static_call(
+                    fun: *mut c_void,
+                    ft: *mut hl_type,
+                    args: *mut *mut c_void,
+                    out: *mut vdynamic,
+                ) -> *mut c_void;
+                unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
             }
-            extern "C" fn sigill_handler(signum: c_int) {
-                if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                    unsafe {
-                        hl_sys::hl_throw(&raw mut SIGILL_EXC);
-                    }
-                }
-            }
-            // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
-            // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
-
-            let mut is_exception = false;
-
-            let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
-                fun: &mut hl_type_fun {
-                    args: null_mut(),
-                    ret: &raw mut hl_sys::hlt_void,
-                    nargs: 0,
-                    parent: null_mut(),
-                    closure_type: core::mem::zeroed(),
-                    closure: core::mem::zeroed(),
-                },
-            };
-
-            let mut t = hl_type {
-                kind: hl_type_kind_HFUN,
-                __bindgen_anon_1,
-                vobj_proto: null_mut(),
-                mark_bits: null_mut(),
-            };
-            let mut c = vclosure {
-                t: &mut t,
-                fun: m
-                    .get_finalized_function(entrypoint)
-                    .cast::<c_void>()
-                    .cast_mut(),
-                hasValue: 0,
-                stackCount: 0,
-                value: null_mut(),
-            };
-            let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
-            if is_exception {
-                let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
-                eprintln!(
-                    "Uncaught exception: {:#?}",
-                    CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
+            unsafe {
+                hl_sys::hl_global_init();
+                #[cfg(feature = "hl-ffi")]
+                hl_sys::hl_setup_callbacks(
+                    hl_ffi::static_call as *mut c_void,
+                    hl_ffi::get_wrapper as *mut c_void,
                 );
-                for (pos, elem) in stack.as_slice::<*mut u16>().iter().enumerate() {
-                    println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
+                #[cfg(not(feature = "hl-ffi"))]
+                hl_sys::hl_setup_callbacks(
+                    hlc_static_call as *mut c_void,
+                    hlc_get_wrapper as *mut c_void,
+                );
+                hl_sys::hl_setup_exception(
+                    resolve_symbol as *mut c_void,
+                    capture_stack as *mut c_void,
+                );
+                let mut stack_top = 0u8;
+                hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
+                let mut args: Vec<&mut CStr> = args
+                    .run
+                    .args
+                    .iter()
+                    .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
+                    .collect();
+                let c_file = CString::from_str(&file).unwrap();
+                hl_sys::hl_sys_init(
+                    args.as_mut_ptr().cast(),
+                    args.len() as i32,
+                    c_file.as_ptr().cast_mut().cast(),
+                );
+                extern "C" fn segv_handler(signum: c_int) {
+                    if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                        unsafe {
+                            hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
+                        }
+                    }
                 }
-                std::process::exit(1);
+                extern "C" fn sigill_handler(signum: c_int) {
+                    if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                        unsafe {
+                            hl_sys::hl_throw(&raw mut SIGILL_EXC);
+                        }
+                    }
+                }
+                // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
+                // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
+
+                let mut is_exception = false;
+
+                let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
+                    fun: &mut hl_type_fun {
+                        args: null_mut(),
+                        ret: &raw mut hl_sys::hlt_void,
+                        nargs: 0,
+                        parent: null_mut(),
+                        closure_type: core::mem::zeroed(),
+                        closure: core::mem::zeroed(),
+                    },
+                };
+
+                let mut t = hl_type {
+                    kind: hl_type_kind_HFUN,
+                    __bindgen_anon_1,
+                    vobj_proto: null_mut(),
+                    mark_bits: null_mut(),
+                };
+                let mut c = vclosure {
+                    t: &mut t,
+                    fun: m
+                        .get_finalized_function(entrypoint)
+                        .cast::<c_void>()
+                        .cast_mut(),
+                    hasValue: 0,
+                    stackCount: 0,
+                    value: null_mut(),
+                };
+                let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
+                if is_exception {
+                    let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
+                    eprintln!(
+                        "Uncaught exception: {:#?}",
+                        CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
+                    );
+                    for (pos, elem) in stack.as_slice::<*mut u16>().iter().enumerate() {
+                        println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
+                    }
+                    std::process::exit(1);
+                }
             }
         }
     }

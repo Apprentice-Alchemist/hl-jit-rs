@@ -15,6 +15,7 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
         &[
             // This speeds up compilation by a lot
             ("regalloc_algorithm", "single_pass"),
+            ("enable_verifier", "false"),
         ],
         cranelift::module::default_libcall_names(),
     )

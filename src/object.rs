@@ -18,16 +18,23 @@ pub fn compile_module(
     name: &str,
     target: Option<String>,
 ) -> (ObjectProduct, OwnedTargetIsa) {
+    let triple = if let Some(target) = target {
+        match Triple::from_str(&target) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Invalid target triple {target}: {e}");
+                std::process::exit(1)
+            }
+        }
+    } else {
+        Triple::host()
+    };
     let mut builder = settings::builder();
     builder.set("is_pic", "true");
     builder.set("regalloc_algorithm", "backtracking");
     builder.set("opt_level", "speed");
     let flags = Flags::new(builder);
-    let isa_builder = if let Some(target) = target {
-        cranelift::codegen::isa::lookup(Triple::from_str(&target).unwrap()).unwrap()
-    } else {
-        cranelift::native::builder_with_options(false).unwrap()
-    };
+    let isa_builder = cranelift::codegen::isa::lookup(triple).unwrap();
     let isa = isa_builder.finish(flags).unwrap();
     let mod_builder = ObjectBuilder::new(isa.clone(), name, default_libcall_names()).unwrap();
     let mut module = UnwindModule::new(ObjectModule::new(mod_builder), true);

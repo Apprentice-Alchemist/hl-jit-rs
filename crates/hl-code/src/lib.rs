@@ -7,15 +7,15 @@ use hl_code_derive::Readable;
 
 pub use crate::opcode::{Idx, OpCode, Reg};
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable, Hash)]
 pub struct TypeIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable, Hash)]
 pub struct UStrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable, Hash)]
 pub struct StrIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable, Hash)]
 pub struct FunIdx(pub usize);
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Readable, Hash)]
 pub struct GlobalIdx(pub usize);
 
 #[derive(Clone, Debug)]
@@ -189,6 +189,7 @@ pub struct HLFunction {
     pub idx: FunIdx,
     pub regs: Vec<TypeIdx>,
     pub opcodes: Vec<OpCode>,
+    pub static_closures: Vec<FunIdx>
 }
 
 impl Index<Reg> for HLFunction {
