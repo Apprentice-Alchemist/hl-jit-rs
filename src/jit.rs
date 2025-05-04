@@ -14,8 +14,9 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(
         &[
             // This speeds up compilation by a lot
-            ("regalloc_algorithm", "single_pass"),
+            ("regalloc_algorithm", "backtracking"),
             ("enable_verifier", "false"),
+            ("opt_level", "speed")
         ],
         cranelift::module::default_libcall_names(),
     )

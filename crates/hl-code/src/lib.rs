@@ -187,7 +187,7 @@ impl HLType {
 pub struct HLFunction {
     pub ty: TypeIdx,
     pub idx: FunIdx,
-    pub regs: Vec<TypeIdx>,
+    pub regs: Vec<(TypeIdx, bool)>,
     pub opcodes: Vec<OpCode>,
     pub static_closures: Vec<FunIdx>
 }
@@ -196,7 +196,7 @@ impl Index<Reg> for HLFunction {
     type Output = TypeIdx;
 
     fn index(&self, index: Reg) -> &Self::Output {
-        &self.regs[index.0]
+        &self.regs[index.0].0
     }
 }
 

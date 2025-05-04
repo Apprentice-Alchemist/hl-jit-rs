@@ -43,35 +43,15 @@ fn declare_func_in_func(
 
 thread_local! {
     static F_CTX: RefCell<FunctionBuilderContext> = RefCell::new(FunctionBuilderContext::new());
-    static CTX: RefCell<Context> = RefCell::new(Context::new());
 }
 
-pub fn emit_fun(c_ctx: &mut CodegenCtx, code: &Code, fun: &HLFunction) {
-    {
-        F_CTX.with_borrow_mut(|f_ctx| {
-            CTX.with_borrow_mut(|ctx| {
-                c_ctx.m.clear_context(ctx);
-                let mut emit_ctx = EmitCtx::new(c_ctx, code, fun, ctx, f_ctx);
-                emit_ctx.translate_body();
-                emit_ctx.finish();
-                if let Err(e) = c_ctx
-                    .m
-                    .define_function(c_ctx.idxs.fn_map[&fun.idx], ctx)
-                {
-                    match e {
-                        cranelift::module::ModuleError::Compilation(e) => {
-                            eprintln!(
-                                "{}",
-                                cranelift::codegen::print_errors::pretty_error(&ctx.func, e)
-                            );
-                            std::process::exit(1);
-                        }
-                        _ => panic!("{e:?}"),
-                    }
-                }
-            });
-        });
-    }
+pub fn emit_fun(c_ctx: &CodegenCtx, code: &Code, fun: &HLFunction, ctx: &mut Context) {
+    F_CTX.with_borrow_mut(|f_ctx| {
+        c_ctx.m.clear_context(ctx);
+        let mut emit_ctx = EmitCtx::new(c_ctx, code, fun, ctx, f_ctx);
+        emit_ctx.translate_body();
+        emit_ctx.finish();
+    });
 }
 
 struct ObjLayout {
@@ -90,7 +70,13 @@ struct EmitCtx<'a> {
     pos: usize,
     obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
     enum_offsets: BTreeMap<(TypeIdx, usize), Vec<u32>>,
-    regs: BTreeMap<Reg, (StackSlot, Type)>,
+    regs: BTreeMap<Reg, (RegStorage, Type)>,
+}
+
+#[derive(Copy, Clone)]
+enum RegStorage {
+    Stack(StackSlot),
+    Var(Variable),
 }
 
 impl<'a> std::ops::Deref for EmitCtx<'a> {
@@ -115,11 +101,7 @@ impl<'a> EmitCtx<'a> {
         ctx: &'a mut Context,
         f_ctx: &'a mut FunctionBuilderContext,
     ) -> EmitCtx<'a> {
-        let CodegenCtx {
-            m,
-            idxs,
-            ..
-        } = c_ctx;
+        let CodegenCtx { m, idxs, .. } = c_ctx;
 
         let function_signature = m
             .declarations()
@@ -132,17 +114,23 @@ impl<'a> EmitCtx<'a> {
         let mut regs = BTreeMap::new();
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, f_ctx);
-        for (idx, ty) in fun.regs.iter().enumerate() {
+        for (idx, (ty, needs_stack)) in fun.regs.iter().enumerate() {
             if !code[*ty].is_void() {
                 let t = super::cranelift_type(&code[*ty]);
                 regs.insert(
                     Reg(idx),
                     (
-                        builder.create_sized_stack_slot(StackSlotData {
-                            kind: StackSlotKind::ExplicitSlot,
-                            size: t.bytes(),
-                            align_shift: 0,
-                        }),
+                        if *needs_stack {
+                            RegStorage::Stack(builder.create_sized_stack_slot(StackSlotData {
+                                kind: StackSlotKind::ExplicitSlot,
+                                size: t.bytes(),
+                                align_shift: 0,
+                            }))
+                        } else {
+                            let v = Variable::new(idx);
+                            builder.declare_var(v, t);
+                            RegStorage::Var(v)
+                        },
                         t,
                     ),
                 );
@@ -156,7 +144,12 @@ impl<'a> EmitCtx<'a> {
         for (idx, arg) in function_signature.params.iter().enumerate() {
             let value = builder.block_params(entry_block)[idx];
             let (slot, _) = regs[&Reg(idx)];
-            builder.ins().stack_store(value, slot, 0);
+            match slot {
+                RegStorage::Stack(slot) => {
+                    builder.ins().stack_store(value, slot, 0);
+                }
+                RegStorage::Var(var) => builder.def_var(var, value),
+            }
         }
 
         let mut blocks = BTreeMap::new();
@@ -182,17 +175,36 @@ impl<'a> EmitCtx<'a> {
 
     fn load_reg(&mut self, r: &Reg) -> Value {
         let (slot, ty) = self.regs[r];
-        self.ins().stack_load(ty, slot, 0)
+        match slot {
+            RegStorage::Stack(slot) => self.ins().stack_load(ty, slot, 0),
+            RegStorage::Var(var) => self.use_var(var),
+        }
     }
 
     fn store_reg(&mut self, r: &Reg, val: Value) {
         let (slot, ty) = self.regs[r];
-        self.ins().stack_store(val, slot, 0);
+        match slot {
+            RegStorage::Stack(slot) => {
+                self.ins().stack_store(val, slot, 0);
+            }
+            RegStorage::Var(var) => match self.try_def_var(var, val) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("val {val}: {}", self.builder.func.dfg.value_type(val));
+                    eprintln!("var {var}: {}", ty);
+
+                    panic!("{e}");
+                }
+            },
+        }
     }
 
     fn reg_addr(&mut self, r: &Reg) -> Value {
         let (slot, _) = self.regs[r];
-        self.ins().stack_addr(types::I64, slot, 0)
+        match slot {
+            RegStorage::Stack(slot) => self.ins().stack_addr(types::I64, slot, 0),
+            _ => panic!("trying to take reg addr of var that was not marked as needs_slot"),
+        }
     }
 
     fn lookup_enum_offset(&mut self, ty: TypeIdx, construct_idx: usize, field_idx: usize) -> u32 {
@@ -306,7 +318,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn translate_body(&mut self) {
-        let mut has_switched = true;
+        let mut has_switched = false;
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
             self.pos = pos;
             if has_switched {
@@ -315,13 +327,7 @@ impl<'a> EmitCtx<'a> {
                 if let Some(block) = self.blocks.get(&pos).map(|b| *b) {
                     if let Some(current_block) = self.current_block() {
                         if block != current_block {
-                            if !self.builder.func.dfg.insts
-                                [Inst::new(self.builder.func.dfg.num_insts() - 1)]
-                            .opcode()
-                            .is_terminator()
-                            {
-                                self.ins().jump(block, &[]);
-                            }
+                            self.ins().jump(block, &[]);
                             self.switch_to_block(block);
                         }
                     } else {
@@ -340,6 +346,26 @@ impl<'a> EmitCtx<'a> {
                         .builder
                         .ins()
                         .iconst(types::I32, self.code.ints[idx.0 as usize] as i64);
+                    let val = match self.reg_type(dst) {
+                        HLType::Int64 => self
+                            .builder
+                            .ins()
+                            .iconst(types::I64, self.code.ints[idx.0 as usize] as i64),
+                        HLType::Int32 => self
+                            .builder
+                            .ins()
+                            .iconst(types::I32, self.code.ints[idx.0 as usize] as i64),
+                        HLType::UInt16 => self
+                            .builder
+                            .ins()
+                            .iconst(types::I16, self.code.ints[idx.0 as usize] as i64),
+                        HLType::UInt8 => self
+                            .builder
+                            .ins()
+                            .iconst(types::I16, self.code.ints[idx.0 as usize] as i64),
+                        _ => panic!(),
+                    };
+
                     self.store_reg(dst, val)
                 }
                 OpCode::Float { dst, idx } => {
@@ -453,6 +479,7 @@ impl<'a> EmitCtx<'a> {
                         let val = self.ins().imul(a, b);
                         self.store_reg(dst, val);
                         self.ins().jump(next_block, &[]);
+                        self.switch_to_block(next_block);
                     }
                 }
                 OpCode::UDiv { dst, a, b } => {
@@ -501,6 +528,7 @@ impl<'a> EmitCtx<'a> {
                         let val = self.ins().iconst(ty, 0);
                         self.store_reg(dst, val);
                         self.ins().jump(next_block, &[]);
+                        self.switch_to_block(next_block);
                     }
                 }
                 OpCode::UMod { dst, a, b } => {
@@ -1324,8 +1352,7 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, kind_val);
                 }
                 OpCode::Ref { dst, val } => {
-                    let (stack_slot, _) = self.regs[val];
-                    let val = self.ins().stack_addr(types::I64, stack_slot, 0);
+                    let val = self.reg_addr(val);
                     self.store_reg(dst, val);
                 }
                 OpCode::Unref { dst, r } => {

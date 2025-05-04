@@ -203,6 +203,7 @@ impl<'a> CodegenCtx<'a> {
             self.idxs.fn_map.insert(fun, id);
             self.idxs.fn_type_map.insert(fun, ty);
         }
+        let mut ctx = Context::new();
         for fun in code.functions.iter() {
             for fid in fun.static_closures.iter() {
                 let func_id = self.idxs.fn_map[fid];
@@ -222,7 +223,20 @@ impl<'a> CodegenCtx<'a> {
                 self.m.define_data(id, &data).unwrap();
                 self.idxs.static_closures.insert(*fid, id);
             }
-            emit::emit_fun(self, &code, fun);
+            emit::emit_fun(self, &code, fun, &mut ctx);
+            if let Err(e) = self.m.define_function(self.idxs.fn_map[&fun.idx], &mut ctx) {
+                match e {
+                    cranelift::module::ModuleError::Compilation(e) => {
+                        eprintln!(
+                            "{}",
+                            cranelift::codegen::print_errors::pretty_error(&ctx.func, e)
+                        );
+                        std::process::exit(1);
+                    }
+                    _ => panic!("{e:?}"),
+                }
+            }
+            self.m.clear_context(&mut ctx);
         }
         data::define_module_context(&mut self.m, &code, &mut self.idxs);
         let entrypoint_id = self.emit_entrypoint(&code);
@@ -260,18 +274,18 @@ impl<'a> CodegenCtx<'a> {
         let hl_global_init_ref = self.m.declare_func_in_func(hl_global_init_id, bcx.func);
         bcx.ins().call(hl_global_init_ref, &[]);
 
-        let hlc_static_call_id = self.idxs.native_calls["hlc_static_call"];
-        let hlc_static_call_ref = self.m.declare_func_in_func(hlc_static_call_id, bcx.func);
-        let hlc_static_call_val = bcx.ins().func_addr(types::I64, hlc_static_call_ref);
-        let hlc_get_wrapper_id = self.idxs.native_calls["hlc_get_wrapper"];
-        let hlc_get_wrapper_ref = self.m.declare_func_in_func(hlc_get_wrapper_id, bcx.func);
-        let hlc_get_wrapper_val = bcx.ins().func_addr(types::I64, hlc_get_wrapper_ref);
-        let hl_setup_callbacks_id = self.idxs.native_calls["hl_setup_callbacks"];
-        let hl_setup_callbacks_ref = self.m.declare_func_in_func(hl_setup_callbacks_id, bcx.func);
-        bcx.ins().call(
-            hl_setup_callbacks_ref,
-            &[hlc_static_call_val, hlc_get_wrapper_val],
-        );
+        // let hlc_static_call_id = self.idxs.native_calls["hlc_static_call"];
+        // let hlc_static_call_ref = self.m.declare_func_in_func(hlc_static_call_id, bcx.func);
+        // let hlc_static_call_val = bcx.ins().func_addr(types::I64, hlc_static_call_ref);
+        // let hlc_get_wrapper_id = self.idxs.native_calls["hlc_get_wrapper"];
+        // let hlc_get_wrapper_ref = self.m.declare_func_in_func(hlc_get_wrapper_id, bcx.func);
+        // let hlc_get_wrapper_val = bcx.ins().func_addr(types::I64, hlc_get_wrapper_ref);
+        // let hl_setup_callbacks_id = self.idxs.native_calls["hl_setup_callbacks"];
+        // let hl_setup_callbacks_ref = self.m.declare_func_in_func(hl_setup_callbacks_id, bcx.func);
+        // bcx.ins().call(
+        //     hl_setup_callbacks_ref,
+        //     &[hlc_static_call_val, hlc_get_wrapper_val],
+        // );
 
         // let hlc_resolve_symbol_id = self.idxs.native_calls["hlc_resolve_symbol"];
         // let hlc_resolve_symbol_ref = self.m.declare_func_in_func(hlc_resolve_symbol_id, bcx.func);

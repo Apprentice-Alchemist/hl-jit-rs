@@ -362,16 +362,29 @@ impl Readable for Code {
             let idx = r.r()?;
             let nregs = r.udx()?;
             let nops = r.udx()?;
-            let regs = r.vec(nregs, Reader::r)?;
+            let mut regs = r.vec(nregs, |r| Ok((Reader::r(r)?, false)))?;
             let mut static_closures = Vec::new();
             let opcodes = r.vec(nops, |r| {
                 let op = Reader::r(r)?;
-                match op {
-                    crate::OpCode::StaticClosure { dst: _, fid } => static_closures.push(fid),
-                    _ => ()
+                match &op {
+                    crate::OpCode::StaticClosure { dst: _, fid } => static_closures.push(*fid),
+                    crate::OpCode::Ref { dst: _, val } => regs[val.0].1 = true,
+                    crate::OpCode::SafeCast { dst: _, val } => regs[val.0].1 = true,
+                    crate::OpCode::CallMethod {
+                        dst: _,
+                        fid: _,
+                        args,
+                    } => {
+                        if matches!(types[args[0].0], crate::HLType::Virtual(_)) {
+                            for val in args.iter() {
+                                regs[val.0].1 = true
+                            }
+                        }
+                    }
+                    _ => (),
                 }
                 Ok(op)
-             })?;
+            })?;
             if let Some(ref debugfiles) = debugfiles {
                 let mut i = 0;
                 let mut debug = Vec::new();
@@ -429,7 +442,7 @@ impl Readable for Code {
                 idx,
                 regs,
                 opcodes,
-                static_closures
+                static_closures,
             })
         })?;
         let constants = r.vec(nconstants, |r| {
