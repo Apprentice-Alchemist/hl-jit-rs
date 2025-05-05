@@ -317,24 +317,20 @@ impl<'a> EmitCtx<'a> {
         super::cranelift_type(self.reg_type(reg))
     }
 
-    pub fn translate_body(&mut self) {
-        let mut has_switched = false;
-        for (pos, op) in self.fun.opcodes.iter().enumerate() {
-            self.pos = pos;
-            if has_switched {
-                has_switched = false;
-            } else {
-                if let Some(block) = self.blocks.get(&pos).map(|b| *b) {
-                    if let Some(current_block) = self.current_block() {
-                        if block != current_block {
-                            self.ins().jump(block, &[]);
-                            self.switch_to_block(block);
-                        }
-                    } else {
-                        unreachable!()
-                    }
+    fn maybe_jump_to_next(&mut self) {
+        if let Some(block) = self.blocks.get(&(self.pos + 1)).map(|b| *b) {
+            if let Some(current_block) = self.current_block() {
+                if current_block != block {
+                    self.ins().jump(block, &[]);
+                    self.switch_to_block(block);
                 }
             }
+        }
+    }
+
+    pub fn translate_body(&mut self) {
+        for (pos, op) in self.fun.opcodes.iter().enumerate() {
+            self.pos = pos;
             self.set_srcloc(SourceLoc::new(pos.try_into().unwrap()));
             match op {
                 OpCode::Mov { dst, src } => {
@@ -366,7 +362,7 @@ impl<'a> EmitCtx<'a> {
                         _ => panic!(),
                     };
 
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::Float { dst, idx } => {
                     let val = if matches!(self.reg_type(dst), HLType::Float32) {
@@ -382,7 +378,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Bool { dst, val } => {
                     let val = self.ins().iconst(types::I8, val.0 as i64);
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::Bytes { dst, idx } => {
                     let gval = if let Some(_) = self.code.bytes {
@@ -452,7 +448,7 @@ impl<'a> EmitCtx<'a> {
                         let a = self.load_reg(a);
                         let b = self.load_reg(b);
                         let val = self.ins().fdiv(a, b);
-                        self.store_reg(dst, val)
+                        self.store_reg(dst, val);
                     } else {
                         let a = self.load_reg(a);
                         let b = self.load_reg(b);
@@ -486,7 +482,7 @@ impl<'a> EmitCtx<'a> {
                     let a = self.load_reg(a);
                     let b = self.load_reg(b);
                     let val = self.ins().udiv(a, b);
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::SMod { dst, a, b } => {
                     if self.reg_type(dst).is_float() {
@@ -809,7 +805,9 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Field { dst, obj, fid } => {
                     self.get_field(dst, obj, fid);
                 }
-                OpCode::SetField { obj, fid, val } => self.set_field(obj, fid, val),
+                OpCode::SetField { obj, fid, val } => {
+                    self.set_field(obj, fid, val);
+                }
                 OpCode::GetThis { dst, fid } => {
                     self.get_field(dst, &Reg(0), fid);
                 }
@@ -956,13 +954,13 @@ impl<'a> EmitCtx<'a> {
                         }
                         _ => panic!("Invalid OToSFloat"),
                     };
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::ToUFloat { dst, val } => {
                     let val = self.load_reg(val);
                     let ty = self.reg_cl_ty(dst);
                     let val = self.builder.ins().fcvt_from_uint(ty, val);
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::ToInt { dst, val } => {
                     let src_ty = self.reg_cl_ty(val);
@@ -982,7 +980,7 @@ impl<'a> EmitCtx<'a> {
                             self.ins().fcvt_to_sint_sat(dst_ty, val)
                         }
                     };
-                    self.store_reg(dst, val)
+                    self.store_reg(dst, val);
                 }
                 OpCode::SafeCast { dst, val } => {
                     let val_addr = self.reg_addr(val);
@@ -1007,6 +1005,7 @@ impl<'a> EmitCtx<'a> {
                         let next_block = self.ensure_block(pos);
                         self.ins().jump(next_block, &[]);
                         self.switch_to_block(next_block);
+                    } else {
                     }
                 }
                 OpCode::Ret(reg) => {
@@ -1462,6 +1461,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
             };
+            self.maybe_jump_to_next();
         }
         if let Some(b) = self.blocks.get(&self.fun.opcodes.len()) {
             self.builder.switch_to_block(*b);
