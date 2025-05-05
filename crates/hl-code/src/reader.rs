@@ -369,21 +369,6 @@ impl Readable for Code {
                 match &op {
                     crate::OpCode::StaticClosure { dst: _, fid } => static_closures.push(*fid),
                     crate::OpCode::Ref { dst: _, val } => regs[val.0].1 = true,
-                    crate::OpCode::SafeCast { dst: _, val } => regs[val.0].1 = true,
-                    crate::OpCode::CallMethod {
-                        dst: _,
-                        fid: _,
-                        args,
-                    } => {
-                        for val in args.iter() {
-                            regs[val.0].1 = true
-                        }
-                    }
-                    crate::OpCode::CallThis { dst, fid: _, args } => {
-                        for val in args.iter() {
-                            regs[val.0].1 = true
-                        }
-                    }
                     _ => (),
                 }
                 Ok(op)

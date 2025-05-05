@@ -41,6 +41,20 @@ fn declare_func_in_func(
     })
 }
 
+fn type_layout(ty: &HLType) -> Layout {
+    match ty {
+        HLType::UInt8 => Layout::new::<u8>(),
+        HLType::UInt16 => Layout::new::<u16>(),
+        HLType::Int32 => Layout::new::<i32>(),
+        HLType::Int64 => Layout::new::<i64>(),
+        HLType::Float32 => Layout::new::<f32>(),
+        HLType::Float64 => Layout::new::<f64>(),
+        HLType::Boolean => Layout::new::<bool>(),
+        HLType::Packed(_) => unimplemented!(),
+        _ => Layout::new::<*mut u8>(),
+    }
+}
+
 thread_local! {
     static F_CTX: RefCell<FunctionBuilderContext> = RefCell::new(FunctionBuilderContext::new());
 }
@@ -71,6 +85,7 @@ struct EmitCtx<'a> {
     obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
     enum_offsets: BTreeMap<(TypeIdx, usize), Vec<u32>>,
     regs: BTreeMap<Reg, (RegStorage, Type)>,
+    safe_cast_slot: Option<StackSlot>,
 }
 
 #[derive(Copy, Clone)]
@@ -168,6 +183,7 @@ impl<'a> EmitCtx<'a> {
             obj_layouts: Default::default(),
             enum_offsets: Default::default(),
             regs,
+            safe_cast_slot: None,
         }
     }
 
@@ -199,6 +215,7 @@ impl<'a> EmitCtx<'a> {
         }
     }
 
+    #[track_caller]
     fn reg_addr(&mut self, r: &Reg) -> Value {
         let (slot, _) = self.regs[r];
         match slot {
@@ -983,7 +1000,22 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::SafeCast { dst, val } => {
-                    let val_addr = self.reg_addr(val);
+                    let slot = match self.regs[val].0 {
+                        RegStorage::Stack(slot) => slot,
+                        RegStorage::Var(var) => {
+                            let slot = self.safe_cast_slot.unwrap_or_else(|| {
+                                self.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    8,
+                                    3,
+                                ))
+                            });
+                            let val = self.use_var(var);
+                            self.ins().stack_store(val, slot, 0);
+                            slot
+                        }
+                    };
+                    let val_addr = self.ins().stack_addr(types::I64, slot, 0);
 
                     self.emit_dyn_cast(dst, self.fun[*val], val_addr);
                 }
@@ -2155,6 +2187,29 @@ impl<'a> EmitCtx<'a> {
                             virt_val,
                             offset_of!(vvirtual, value) as i32,
                         );
+                        let mut stack_layout = Layout::from_size_align(0, 1).unwrap();
+                        let mut stack_layout_offsets = Vec::new();
+                        for arg in args.iter() {
+                            let t = this.reg_type(arg);
+                            if t.is_ptr() {
+                                continue;
+                            } else {
+                                let (new_layout, off) =
+                                    stack_layout.extend(type_layout(t)).unwrap();
+                                stack_layout = new_layout;
+                                stack_layout_offsets.push(off);
+                            }
+                        }
+                        // TODO: reuse slots where possible?
+                        let slot = if stack_layout.size() > 0 {
+                            Some(this.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                stack_layout.size() as u32,
+                                stack_layout.align().ilog2() as u8,
+                            )))
+                        } else {
+                            None
+                        };
                         for (pos, reg) in args.iter().enumerate() {
                             if this.reg_type(reg).is_ptr() {
                                 let val = this.load_reg(reg);
@@ -2164,7 +2219,11 @@ impl<'a> EmitCtx<'a> {
                                     pointer_bytes as i32 * (pos) as i32,
                                 );
                             } else {
-                                let val = this.reg_addr(reg);
+                                let val = this.load_reg(reg);
+                                let slot = slot.unwrap();
+                                let off = stack_layout_offsets.remove(0) as i32;
+                                this.ins().stack_store(val, slot, off);
+                                let val = this.ins().stack_addr(types::I64, slot, off);
                                 this.ins().stack_store(
                                     val,
                                     stack_slot,

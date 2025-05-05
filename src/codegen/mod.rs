@@ -206,6 +206,9 @@ impl<'a> CodegenCtx<'a> {
         let mut ctx = Context::new();
         for fun in code.functions.iter() {
             for fid in fun.static_closures.iter() {
+                if self.idxs.static_closures.contains_key(fid) {
+                    continue;
+                }
                 let func_id = self.idxs.fn_map[fid];
 
                 let id = self.m.declare_anonymous_data(false, false).unwrap();
