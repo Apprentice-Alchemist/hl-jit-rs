@@ -375,10 +375,13 @@ impl Readable for Code {
                         fid: _,
                         args,
                     } => {
-                        if matches!(types[args[0].0], crate::HLType::Virtual(_)) {
-                            for val in args.iter() {
-                                regs[val.0].1 = true
-                            }
+                        for val in args.iter() {
+                            regs[val.0].1 = true
+                        }
+                    }
+                    crate::OpCode::CallThis { dst, fid: _, args } => {
+                        for val in args.iter() {
+                            regs[val.0].1 = true
                         }
                     }
                     _ => (),
