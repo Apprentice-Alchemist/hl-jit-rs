@@ -12,9 +12,11 @@ use std::{
     process::abort,
     ptr::{null, null_mut},
     str::FromStr,
+    sync::atomic::AtomicBool,
     time::Instant,
 };
 use target_lexicon::OperatingSystem;
+use tempfile::TempPath;
 
 pub use hl_code as code;
 
@@ -42,7 +44,7 @@ struct Args {
 struct Run {
     /// Compile but don't run
     #[arg(long)]
-    no_jit: bool,
+    no_run: bool,
     /// Bytecode file to execute
     file: Option<String>,
     /// Program arguments
@@ -124,9 +126,23 @@ static mut SIGILL_EXC: vdynamic = vdynamic {
     },
 };
 
+static COLLECT_TIMING: AtomicBool = AtomicBool::new(false);
+
+fn time<T>(stage: &'static str, f: impl FnOnce() -> T) -> T {
+    if COLLECT_TIMING.load(std::sync::atomic::Ordering::Relaxed) {
+        let start = Instant::now();
+        let ret = f();
+        println!("{stage}: {:?}", start.elapsed());
+        ret
+    } else {
+        f()
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     clap_complete::env::CompleteEnv::with_factory(Args::command).complete();
     let mut args = Args::parse();
+    COLLECT_TIMING.store(args.timings, std::sync::atomic::Ordering::Relaxed);
 
     if let Some(Compile::Compile {
         file,
@@ -135,179 +151,193 @@ fn main() -> Result<(), Box<dyn Error>> {
         target,
     }) = args.compile
     {
-        let code = hl_code::Code::from_file(&file).unwrap();
-        println!("parsing done");
+        let code = time("parsing", || hl_code::Code::from_file(&file).unwrap());
+        let (product, isa) = time("compiling", || {
+            crate::object::compile_module(&code, file.to_string_lossy().as_ref(), target.clone())
+        });
         let start = Instant::now();
 
-        let (product, isa) =
-            crate::object::compile_module(&code, file.to_string_lossy().as_ref(), target);
-        println!("compiling done in {:?}", start.elapsed());
-        let start = Instant::now();
-        let bytes = product.emit()?;
         if (!link) {
-            let out_file = output.unwrap_or_else(|| file.with_extension("o"));
-            std::fs::write(out_file, bytes)?;
+            time("write_object", move || {
+                let bytes = product.emit()?;
+                let out_file = output.unwrap_or_else(|| file.with_extension("o"));
+                std::fs::write(out_file, bytes)?;
+                Ok::<(), Box<dyn Error>>(())
+            })?;
         } else {
-            let stub_paths: Vec<tempfile::TempPath> =
+            let object_path = time("write_object", || {
+                let bytes = product.emit()?;
+                let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
+                file.as_file_mut().write_all(&bytes).unwrap();
+                Ok::<TempPath, Box<dyn Error>>(file.into_temp_path())
+            })?;
+
+            let stub_paths: Vec<TempPath> = time("create_stubs", || {
                 stub::create_stubs(&code, isa.as_ref(), |name, bytes| {
                     let mut file = tempfile::NamedTempFile::new().unwrap();
                     file.as_file_mut().write_all(&bytes).unwrap();
                     file.into_temp_path()
-                });
-
-            let out_file = output.unwrap_or_else(|| {
-                file.with_extension(
-                    if isa.triple().operating_system == OperatingSystem::Windows {
-                        "exe"
-                    } else {
-                        ""
-                    },
-                )
+                })
             });
-            eprintln!("WARNING: linking to executable is experimental and will likely not work");
-            let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
-            file.as_file_mut().write_all(&bytes).unwrap();
-            let path = file.into_temp_path();
-            let mut command = std::process::Command::new("cc");
-            command
-                .args([
-                    "-L",
-                    "/usr/local/lib",
-                    "-L",
-                    "target/debug",
-                    // order is, unfortunately, relevant when GNU ld is used
-                    path.to_str().unwrap(),
-                    "-lhl_ffi",
-                    "-lhl",
-                    "-lm",
-                    "-o",
-                    format!("{}", out_file.file_name().unwrap().display()).as_str(),
-                    "-Wl,-rpath,/usr/local/lib",
-                    "-g",
-                ])
-                .args(&stub_paths);
 
-            if !command.status().unwrap().success() {
+            let status = time("link_executable", || {
+                let out_file = output.unwrap_or_else(|| {
+                    file.with_extension(
+                        if isa.triple().operating_system == OperatingSystem::Windows {
+                            "exe"
+                        } else {
+                            ""
+                        },
+                    )
+                });
+                eprintln!(
+                    "WARNING: linking to executable is experimental and will likely not work"
+                );
+
+                let mut command = std::process::Command::new("cc");
+                command
+                    .args([
+                        "-L",
+                        "/usr/local/lib",
+                        // "-L",
+                        // "target/debug",
+                        // order is, unfortunately, relevant when GNU ld is used
+                        object_path.to_str().unwrap(),
+                        // "-lhl_ffi",
+                        "-lhl",
+                        "-lm",
+                        "-o",
+                        format!("{}", out_file.file_name().unwrap().display()).as_str(),
+                        "-Wl,-rpath,/usr/local/lib",
+                        "-g",
+                    ])
+                    .args(&stub_paths);
+
+                command.status().unwrap()
+            });
+            if !status.success() {
                 eprintln!("failed to compile to executable");
                 std::process::exit(1);
             }
-
-            println!(
-                "writing and native compilation done in {:?}",
-                start.elapsed()
-            );
         }
     } else {
         let file = args.run.file.unwrap_or_else(|| {
             Args::command().print_help().unwrap();
             std::process::exit(0);
         });
-        let code = hl_code::Code::from_file(&file).unwrap();
-        println!("parsing done");
-        let start = Instant::now();
-        let (m, entrypoint) = crate::jit::compile_module(code);
-        println!("compiling done in {:?}", start.elapsed());
-        if !args.run.no_jit {
-            #[cfg(not(feature = "hl-ffi"))]
-            unsafe extern "C" {
-                unsafe fn hlc_static_call(
-                    fun: *mut c_void,
-                    ft: *mut hl_type,
-                    args: *mut *mut c_void,
-                    out: *mut vdynamic,
-                ) -> *mut c_void;
-                unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
-            }
-            unsafe {
-                hl_sys::hl_global_init();
-                #[cfg(feature = "hl-ffi")]
-                hl_sys::hl_setup_callbacks(
-                    hl_ffi::static_call as *mut c_void,
-                    hl_ffi::get_wrapper as *mut c_void,
-                );
-                #[cfg(not(feature = "hl-ffi"))]
-                hl_sys::hl_setup_callbacks(
-                    hlc_static_call as *mut c_void,
-                    hlc_get_wrapper as *mut c_void,
-                );
-                hl_sys::hl_setup_exception(
-                    resolve_symbol as *mut c_void,
-                    capture_stack as *mut c_void,
-                );
-                let mut stack_top = 0u8;
-                hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
-                let mut args: Vec<&mut CStr> = args
-                    .run
-                    .args
-                    .iter()
-                    .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
-                    .collect();
-                let c_file = CString::from_str(&file).unwrap();
-                hl_sys::hl_sys_init(
-                    args.as_mut_ptr().cast(),
-                    args.len() as i32,
-                    c_file.as_ptr().cast_mut().cast(),
-                );
-                extern "C" fn segv_handler(signum: c_int) {
-                    if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                        unsafe {
-                            hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
-                        }
-                    }
-                }
-                extern "C" fn sigill_handler(signum: c_int) {
-                    if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                        unsafe {
-                            hl_sys::hl_throw(&raw mut SIGILL_EXC);
-                        }
-                    }
-                }
-                // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
-                // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
-
-                let mut is_exception = false;
-
-                let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
-                    fun: &mut hl_type_fun {
-                        args: null_mut(),
-                        ret: &raw mut hl_sys::hlt_void,
-                        nargs: 0,
-                        parent: null_mut(),
-                        closure_type: core::mem::zeroed(),
-                        closure: core::mem::zeroed(),
-                    },
-                };
-
-                let mut t = hl_type {
-                    kind: hl_type_kind_HFUN,
-                    __bindgen_anon_1,
-                    vobj_proto: null_mut(),
-                    mark_bits: null_mut(),
-                };
-                let mut c = vclosure {
-                    t: &mut t,
-                    fun: m
-                        .get_finalized_function(entrypoint)
-                        .cast::<c_void>()
-                        .cast_mut(),
-                    hasValue: 0,
-                    stackCount: 0,
-                    value: null_mut(),
-                };
-                let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
-                if is_exception {
-                    let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
-                    eprintln!(
-                        "Uncaught exception: {:#?}",
-                        CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
-                    );
-                    for (pos, elem) in stack.as_slice::<*mut u16>().iter().enumerate() {
-                        println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
-                    }
-                    std::process::exit(1);
-                }
+        let code = time("parsing", || hl_code::Code::from_file(&file).unwrap());
+        let (m, entrypoint) = time("jit", move || crate::jit::compile_module(code));
+        if !args.run.no_run {
+            let mut args: Vec<&mut CStr> = args
+                .run
+                .args
+                .iter()
+                .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
+                .collect();
+            let f = m
+                .get_finalized_function(entrypoint)
+                .cast::<c_void>()
+                .cast_mut();
+            let success = time("run", || run_jit(args, file, f)).is_ok();
+            if !success {
+                std::process::exit(1);
             }
         }
     }
     Ok(())
+}
+
+fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(), ()> {
+    #[cfg(not(feature = "hl-ffi"))]
+    unsafe extern "C" {
+        unsafe fn hlc_static_call(
+            fun: *mut c_void,
+            ft: *mut hl_type,
+            args: *mut *mut c_void,
+            out: *mut vdynamic,
+        ) -> *mut c_void;
+        unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
+    }
+    unsafe {
+        hl_sys::hl_global_init();
+        #[cfg(feature = "hl-ffi")]
+        hl_sys::hl_setup_callbacks(
+            hl_ffi::static_call as *mut c_void,
+            hl_ffi::get_wrapper as *mut c_void,
+        );
+        #[cfg(not(feature = "hl-ffi"))]
+        hl_sys::hl_setup_callbacks(
+            hlc_static_call as *mut c_void,
+            hlc_get_wrapper as *mut c_void,
+        );
+        hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
+        let mut stack_top = 0u8;
+        hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
+
+        let c_file = CString::from_str(&file).unwrap();
+        hl_sys::hl_sys_init(
+            args.as_mut_ptr().cast(),
+            args.len() as i32,
+            c_file.as_ptr().cast_mut().cast(),
+        );
+        extern "C" fn segv_handler(signum: c_int) {
+            if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                unsafe {
+                    hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
+                }
+            }
+        }
+        extern "C" fn sigill_handler(signum: c_int) {
+            if let Some(t) = unsafe { hl_get_thread().as_ref() } {
+                unsafe {
+                    hl_sys::hl_throw(&raw mut SIGILL_EXC);
+                }
+            }
+        }
+        // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
+        // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
+
+        let mut is_exception = false;
+
+        let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
+            fun: &mut hl_type_fun {
+                args: null_mut(),
+                ret: &raw mut hl_sys::hlt_void,
+                nargs: 0,
+                parent: null_mut(),
+                closure_type: core::mem::zeroed(),
+                closure: core::mem::zeroed(),
+            },
+        };
+
+        let mut t = hl_type {
+            kind: hl_type_kind_HFUN,
+            __bindgen_anon_1,
+            vobj_proto: null_mut(),
+            mark_bits: null_mut(),
+        };
+        let mut c = vclosure {
+            t: &mut t,
+            fun,
+            hasValue: 0,
+            stackCount: 0,
+            value: null_mut(),
+        };
+        let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
+        if is_exception {
+            let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
+            eprintln!(
+                "Uncaught exception: {:#?}",
+                CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
+            );
+            for (pos, elem) in stack.as_slice::<*const u16>().iter().enumerate() {
+                println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
+            }
+            hl_sys::hl_global_free();
+            Err(())
+        } else {
+            hl_sys::hl_global_free();
+            Ok(())
+        }
+    }
 }
