@@ -259,7 +259,8 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
         unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
     }
     unsafe {
-        hl_sys::hl_global_init();
+        // hl_sys::hl_global_init();
+        let global = hl_sys::GLOBAL.init();
         #[cfg(feature = "hl-ffi")]
         hl_sys::hl_setup_callbacks(
             hl_ffi::static_call as *mut c_void,
@@ -271,15 +272,29 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
             hlc_get_wrapper as *mut c_void,
         );
         hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
-        let mut stack_top = 0u8;
-        hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
-
         let c_file = CString::from_str(&file).unwrap();
         hl_sys::hl_sys_init(
             args.as_mut_ptr().cast(),
             args.len() as i32,
             c_file.as_ptr().cast_mut().cast(),
         );
+        let foo = global.with_thread(|thread| {
+            let ty = todo!();
+            let c = hl_sys::VClosure::new(ty, fun.cast_const());
+            match thread.dyn_call_safe(&c, &[]) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("Uncaught exception: {}", e.to_string(),);
+                    let stack = thread.exception_stack();
+                    for (pos, elem) in stack.0.as_slice::<hl_sys::UStr>().iter().enumerate() {
+                        println!("  {pos}: {}", elem);
+                    }
+                }
+            }
+        });
+        let mut stack_top = 0u8;
+        hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
+
         extern "C" fn segv_handler(signum: c_int) {
             if let Some(t) = unsafe { hl_get_thread().as_ref() } {
                 unsafe {
@@ -333,10 +348,10 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
             for (pos, elem) in stack.as_slice::<*const u16>().iter().enumerate() {
                 println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
             }
-            hl_sys::hl_global_free();
+            // hl_sys::hl_global_free();
             Err(())
         } else {
-            hl_sys::hl_global_free();
+            // hl_sys::hl_global_free();
             Ok(())
         }
     }

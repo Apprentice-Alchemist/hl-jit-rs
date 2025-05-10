@@ -42,4 +42,250 @@ mod sys {
     }
 }
 
+use std::marker::PhantomData;
+
 pub use sys::*;
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct UStr {
+    ptr: *const u16,
+}
+
+impl UStr {
+    pub unsafe fn from_ptr(ptr: *const u16) -> UStr {
+        UStr { ptr }
+    }
+
+    pub fn iter(&self) -> UStringIter {
+        UStringIter::new(self)
+    }
+}
+
+pub struct UStringIter<'a> {
+    pos: usize,
+    ptr: *const u16,
+    phantom: PhantomData<&'a u16>,
+}
+
+impl UStringIter<'_> {
+    fn new(s: &UStr) -> Self {
+        UStringIter {
+            pos: 0,
+            ptr: s.ptr,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl Iterator for UStringIter<'_> {
+    type Item = u16;
+    fn next(&mut self) -> Option<Self::Item> {
+        let val = unsafe { self.ptr.add(self.pos).read() };
+        if val == 0 {
+            None
+        } else {
+            self.pos += 1;
+            Some(val)
+        }
+    }
+}
+
+impl std::fmt::Display for UStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for c in char::decode_utf16(self.iter()) {
+            std::fmt::Write::write_char(f, c.unwrap_or(char::REPLACEMENT_CHARACTER))?;
+        }
+        Ok(())
+    }
+}
+
+pub static GLOBAL: Global = Global(());
+
+pub struct Global(());
+
+pub struct GlobalHandle<'a>(PhantomData<&'a Global>);
+
+pub struct ThreadHandle<'thread, 'global: 'thread>(
+    PhantomData<&'thread mut &'thread ()>,
+    PhantomData<&'global mut &'global ()>,
+);
+
+impl Drop for GlobalHandle<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            sys::hl_global_free();
+        }
+    }
+}
+
+impl Global {
+    pub fn init<'a>(&'a self) -> GlobalHandle<'a> {
+        unsafe {
+            sys::hl_global_init();
+        }
+        GlobalHandle(PhantomData)
+    }
+}
+
+impl GlobalHandle<'_> {
+    /// Registers the current thread with the hashlink runtime
+    /// executes `cb` and then unregisters the thread
+    ///
+    /// # Panics
+    /// If `cb` panics and unwinding is enabled then the panic will be caught, the thread unregistered and the panic will resume
+    pub fn with_current_thread<'global, T>(
+        &'global self,
+        cb: impl for<'thread> FnOnce(&'thread ThreadHandle<'thread, 'global>) -> T,
+    ) -> T {
+        let handle = ThreadHandle(PhantomData, PhantomData);
+        unsafe {
+            sys::hl_register_thread((&raw const handle).cast_mut().cast());
+        }
+        let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(&handle)));
+        unsafe {
+            sys::hl_unregister_thread();
+        }
+
+        match ret {
+            Ok(val) => val,
+            Err(e) => std::panic::resume_unwind(e),
+        }
+    }
+}
+
+#[repr(transparent)]
+pub struct Type<'a>(sys::hl_type, PhantomData<&'a sys::hl_type>);
+
+impl Type<'_> {
+    pub fn void() -> &'static Type<'static> {
+        // Safety: Type has #[repr(transparent)] so &Type and *const hl_type have compatible layout
+        unsafe { core::mem::transmute(&raw const hlt_void) }
+    }
+    pub fn fun<'a>(args: &'a [&'a Type<'a>], ret: &'a Type) -> Type<'a> {
+        use core::ptr::null_mut;
+        assert!(args.len() == 0);
+        let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
+            // TODO: get rid of Box::leak
+            fun: Box::leak(Box::new(hl_type_fun {
+                args: args.as_ptr().cast_mut().cast(),
+                ret: (&raw const ret.0).cast_mut(),
+                nargs: args.len().try_into().unwrap(),
+                parent: null_mut(),
+                closure_type: unsafe { core::mem::zeroed() },
+                closure: unsafe { core::mem::zeroed() },
+            })),
+        };
+        Type(
+            sys::hl_type {
+                kind: sys::hl_type_kind_HFUN,
+                __bindgen_anon_1,
+                vobj_proto: null_mut(),
+                mark_bits: null_mut(),
+            },
+            PhantomData,
+        )
+    }
+}
+
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct VArray<'a, T>(&'a sys::varray, PhantomData<T>);
+
+impl<'a, T: 'a> IntoIterator for VArray<'a, T>
+where
+    T: Copy,
+{
+    type Item = T;
+
+    type IntoIter = VArrayIterator<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        unsafe { VArrayIterator(self.0.as_slice::<T>().iter()) }
+    }
+}
+
+pub struct VArrayIterator<'a, T: Copy>(core::slice::Iter<'a, T>);
+
+impl<T: Copy> Iterator for VArrayIterator<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().copied()
+    }
+}
+
+#[repr(transparent)]
+pub struct VDynamic<'a>(&'a vdynamic);
+
+impl VDynamic<'_> {
+    pub fn ty(&self) -> &Type {
+        unsafe { self.0.t.cast::<Type>().as_ref().unwrap() }
+    }
+
+    pub fn to_string(&self) -> UStr {
+        UStr {
+            ptr: unsafe { sys::hl_to_string(core::ptr::from_ref(self.0).cast_mut()) },
+        }
+    }
+}
+
+#[repr(transparent)]
+pub struct VClosure(vclosure);
+
+impl VClosure {
+    pub fn new(t: &Type, fun: *const std::ffi::c_void) -> Self {
+        VClosure(vclosure {
+            t: (&raw const t.0).cast_mut(),
+            fun: fun.cast_mut(),
+            hasValue: 0,
+            stackCount: 0,
+            value: core::ptr::null_mut(),
+        })
+    }
+    pub fn as_ptr(&self) -> *const vclosure {
+        &raw const self.0
+    }
+}
+
+impl<'thread, 'global> ThreadHandle<'thread, 'global> {
+    pub fn dyn_call_safe(
+        &'thread self,
+        c: &VClosure,
+        args: &[VDynamic],
+    ) -> Result<Option<VDynamic<'global>>, VDynamic<'global>> {
+        #[expect(clashing_extern_declarations)]
+        unsafe extern "C" {
+            pub unsafe fn hl_dyn_call_safe<'a>(
+                c: &vclosure,
+                args: *mut &vdynamic,
+                nargs: ::std::ffi::c_int,
+                isException: &mut bool,
+            ) -> Option<&'a vdynamic>;
+        }
+
+        let mut is_exception = false;
+        let ret = unsafe {
+            hl_dyn_call_safe(
+                &c.0,
+                args.as_ptr().cast_mut().cast(),
+                args.len().try_into().unwrap(),
+                &mut is_exception,
+            )
+        };
+        if is_exception {
+            Err(VDynamic(ret.unwrap()))
+        } else {
+            Ok(ret.map(|d| VDynamic(d)))
+        }
+    }
+
+    pub fn exception_stack(&self) -> VArray<UStr> {
+        unsafe {
+            VArray(
+                sys::hl_exception_stack().cast_const().as_ref().unwrap(),
+                PhantomData,
+            )
+        }
+    }
+}

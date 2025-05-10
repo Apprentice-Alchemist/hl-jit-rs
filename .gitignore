@@ -11,3 +11,5 @@ compile_commands.json
 profile.json.gz
 main
 bin
+*.core
+*.sh
