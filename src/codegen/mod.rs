@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::mem::offset_of;
+use std::alloc::Layout;
 
 use cranelift::codegen::Context;
 use cranelift::codegen::ir;
@@ -18,6 +19,15 @@ use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
 mod data;
 mod emit;
 
+struct ObjLayout {
+    layout: Layout,
+    fields: Vec<(u32, TypeIdx)>,
+}
+
+struct EnumLayout {
+    variants: Vec<Vec<u32>>,
+}
+
 struct Indexes {
     module_context_id: DataId,
     types: Vec<DataId>,
@@ -29,6 +39,8 @@ struct Indexes {
     native_calls: BTreeMap<&'static str, FuncId>,
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
     static_closures: BTreeMap<FunIdx, DataId>,
+    obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
+    enum_layouts: BTreeMap<TypeIdx, EnumLayout>,
 }
 
 pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
@@ -169,6 +181,8 @@ impl<'a> CodegenCtx<'a> {
             native_calls: Default::default(),
             hash_locations: Default::default(),
             static_closures: Default::default(),
+            obj_layouts: Default::default(),
+            enum_layouts: Default::default(),
         };
         Self { m, idxs }
     }

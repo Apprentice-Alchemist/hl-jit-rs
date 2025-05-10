@@ -15,12 +15,98 @@ use hl_sys::{
 };
 
 use super::Indexes;
+use super::ObjLayout;
+use std::alloc::Layout;
+
+fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
+    let mut fields = Vec::new();
+
+    fn fill_offsets(
+        code: &Code,
+        ty: TypeIdx,
+        offsets: &mut Vec<(u32, TypeIdx)>,
+    ) -> (usize, Layout) {
+        let o = code[ty].type_obj().unwrap();
+        let (nfields, layout) = if let Some(ty) = o.super_ {
+            fill_offsets(code, ty, offsets)
+        } else {
+            (
+                0,
+                if matches!(code[ty], HLType::Object(_)) {
+                    Layout::new::<*mut u8>()
+                } else {
+                    Layout::from_size_align(0, 1).unwrap()
+                },
+            )
+        };
+
+        let mut layout = layout;
+        for (i, (str_idx, type_idx)) in o.fields.iter().enumerate() {
+            let field_layout = match &code[*type_idx] {
+                HLType::UInt8 => Layout::new::<u8>(),
+                HLType::UInt16 => Layout::new::<u16>(),
+                HLType::Int32 => Layout::new::<i32>(),
+                HLType::Int64 | HLType::Guid => Layout::new::<i64>(),
+                HLType::Float32 => Layout::new::<f32>(),
+                HLType::Float64 => Layout::new::<f64>(),
+                HLType::Boolean => Layout::new::<bool>(),
+                HLType::Packed(ty) => {
+                    // TODO: cache this
+                    build_obj_layout(code, *ty).layout
+                }
+                t => {
+                    assert!(t.is_ptr(), "{t:?} should be a pointer");
+                    Layout::new::<*mut u8>()
+                }
+            };
+            let (new_layout, offset) = layout.extend(field_layout).unwrap();
+            layout = new_layout;
+            offsets.push((offset.try_into().unwrap(), *type_idx));
+        }
+
+        (nfields + o.fields.len(), layout)
+    }
+
+    let (nfields, mut layout) = fill_offsets(code, ty, &mut fields);
+    layout = layout.pad_to_align();
+    let l = ObjLayout { layout, fields };
+    l
+}
 
 pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<(), Box<dyn Error>> {
     idxs.types.reserve(code.types.len());
     for idx in 0..code.types.len() {
         let id = m.declare_data(&format!("type{idx}"), Linkage::Local, true, false)?;
         idxs.types.push(id);
+        if let Some(obj) = code[TypeIdx(idx)].type_obj() {
+            let layout = build_obj_layout(code, TypeIdx(idx));
+            idxs.obj_layouts.insert(TypeIdx(idx), layout);
+        }
+        if let Some(obj) = code[TypeIdx(idx)].type_enum() {
+            let mut variants = Vec::new();
+            for (_, fields) in &obj.constructs {
+                let mut offsets = Vec::new();
+                let mut layout = Layout::new::<*mut u8>();
+                let (mut layout, mut offset) = layout.extend(Layout::new::<c_int>()).unwrap();
+
+                for (pos, ty) in fields.iter().enumerate() {
+                    let field_layout = match &code[*ty] {
+                        HLType::UInt8 => Layout::new::<u8>(),
+                        HLType::UInt16 => Layout::new::<u16>(),
+                        HLType::Int32 => Layout::new::<i32>(),
+                        HLType::Int64 => Layout::new::<i64>(),
+                        HLType::Float32 => Layout::new::<f32>(),
+                        HLType::Float64 => Layout::new::<f64>(),
+                        HLType::Boolean => Layout::new::<bool>(),
+                        _ => Layout::new::<*mut u8>(),
+                    };
+                    (layout, offset) = layout.extend(field_layout).unwrap();
+                    offsets.push(offset.try_into().unwrap())
+                }
+                variants.push(offsets);
+            }
+            idxs.enum_layouts.insert(TypeIdx(idx), super::EnumLayout { variants });
+        }
     }
 
     idxs.ustr.reserve(code.strings.len());

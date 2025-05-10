@@ -68,10 +68,7 @@ pub fn emit_fun(c_ctx: &CodegenCtx, code: &Code, fun: &HLFunction, ctx: &mut Con
     });
 }
 
-struct ObjLayout {
-    layout: Layout,
-    fields: Vec<(u32, TypeIdx)>,
-}
+use super::ObjLayout;
 
 struct EmitCtx<'a> {
     m: &'a dyn Module,
@@ -82,8 +79,6 @@ struct EmitCtx<'a> {
     blocks: BTreeMap<usize, Block>,
     // position of current HL opcode
     pos: usize,
-    obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
-    enum_offsets: BTreeMap<(TypeIdx, usize), Vec<u32>>,
     regs: BTreeMap<Reg, (RegStorage, Type)>,
     safe_cast_slot: Option<StackSlot>,
 }
@@ -180,8 +175,6 @@ impl<'a> EmitCtx<'a> {
             builder,
             blocks,
             pos: 0,
-            obj_layouts: Default::default(),
-            enum_offsets: Default::default(),
             regs,
             safe_cast_slot: None,
         }
@@ -225,94 +218,11 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn lookup_enum_offset(&mut self, ty: TypeIdx, construct_idx: usize, field_idx: usize) -> u32 {
-        if let Some(offsets) = self.enum_offsets.get(&(ty, construct_idx)) {
-            return offsets[field_idx];
-        }
-
-        let mut offsets = Vec::<u32>::new();
-        let construct = &self.code[ty].type_enum().unwrap().constructs[construct_idx];
-        let mut layout = Layout::new::<*mut u8>();
-        let (mut layout, mut offset) = layout.extend(Layout::new::<c_int>()).unwrap();
-
-        for (pos, ty) in construct.1.iter().enumerate() {
-            let field_layout = match &self.code[*ty] {
-                HLType::UInt8 => Layout::new::<u8>(),
-                HLType::UInt16 => Layout::new::<u16>(),
-                HLType::Int32 => Layout::new::<i32>(),
-                HLType::Int64 => Layout::new::<i64>(),
-                HLType::Float32 => Layout::new::<f32>(),
-                HLType::Float64 => Layout::new::<f64>(),
-                HLType::Boolean => Layout::new::<bool>(),
-                _ => Layout::new::<*mut u8>(),
-            };
-            (layout, offset) = layout.extend(field_layout).unwrap();
-            offsets.push(offset.try_into().unwrap())
-        }
-        let offset = offsets[field_idx];
-        self.enum_offsets.insert((ty, construct_idx), offsets);
-
-        offset
-    }
-
-    fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
-        let mut fields = Vec::new();
-
-        fn fill_offsets(
-            code: &Code,
-            ty: TypeIdx,
-            offsets: &mut Vec<(u32, TypeIdx)>,
-        ) -> (usize, Layout) {
-            let o = code[ty].type_obj().unwrap();
-            let (nfields, layout) = if let Some(ty) = o.super_ {
-                fill_offsets(code, ty, offsets)
-            } else {
-                (
-                    0,
-                    if matches!(code[ty], HLType::Object(_)) {
-                        Layout::new::<*mut u8>()
-                    } else {
-                        Layout::from_size_align(0, 1).unwrap()
-                    },
-                )
-            };
-
-            let mut layout = layout;
-            for (i, (str_idx, type_idx)) in o.fields.iter().enumerate() {
-                let field_layout = match &code[*type_idx] {
-                    HLType::UInt8 => Layout::new::<u8>(),
-                    HLType::UInt16 => Layout::new::<u16>(),
-                    HLType::Int32 => Layout::new::<i32>(),
-                    HLType::Int64 | HLType::Guid => Layout::new::<i64>(),
-                    HLType::Float32 => Layout::new::<f32>(),
-                    HLType::Float64 => Layout::new::<f64>(),
-                    HLType::Boolean => Layout::new::<bool>(),
-                    HLType::Packed(ty) => {
-                        // TODO: cache this
-                        EmitCtx::build_obj_layout(code, *ty).layout
-                    }
-                    t => {
-                        assert!(t.is_ptr(), "{t:?} should be a pointer");
-                        Layout::new::<*mut u8>()
-                    }
-                };
-                let (new_layout, offset) = layout.extend(field_layout).unwrap();
-                layout = new_layout;
-                offsets.push((offset.try_into().unwrap(), *type_idx));
-            }
-
-            (nfields + o.fields.len(), layout)
-        }
-
-        let (nfields, mut layout) = fill_offsets(code, ty, &mut fields);
-        layout = layout.pad_to_align();
-        let l = ObjLayout { layout, fields };
-        l
+        self.idxs.enum_layouts[&ty].variants[construct_idx][field_idx]
     }
 
     fn get_obj_layout(&mut self, ty: TypeIdx) -> &ObjLayout {
-        self.obj_layouts
-            .entry(ty)
-            .or_insert_with(|| Self::build_obj_layout(self.code, ty))
+        &self.idxs.obj_layouts[&ty]
     }
 
     fn lookup_field(&mut self, ty: TypeIdx, field_idx: usize) -> Option<(u32, TypeIdx)> {
@@ -355,10 +265,6 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val)
                 }
                 OpCode::Int { dst, idx } => {
-                    let val = self
-                        .builder
-                        .ins()
-                        .iconst(types::I32, self.code.ints[idx.0 as usize] as i64);
                     let val = match self.reg_type(dst) {
                         HLType::Int64 => self
                             .builder
@@ -1469,6 +1375,8 @@ impl<'a> EmitCtx<'a> {
                     let f = self.native_fun("hl_assert");
                     self.ins().call(f, &[]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
+                    let b = self.next_block();
+                    self.switch_to_block(b);
                 }
                 OpCode::RefData { dst, r } => match self.reg_type(r) {
                     HLType::Array => {
