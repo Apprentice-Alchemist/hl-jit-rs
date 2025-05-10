@@ -281,7 +281,7 @@ impl<'a> EmitCtx<'a> {
                         HLType::UInt8 => self
                             .builder
                             .ins()
-                            .iconst(types::I16, self.code.ints[idx.0 as usize] as i64),
+                            .iconst(types::I8, self.code.ints[idx.0 as usize] as i64),
                         _ => panic!(),
                     };
 
