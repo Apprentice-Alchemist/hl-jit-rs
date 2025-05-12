@@ -11,13 +11,14 @@ use cranelift::module::{
     ModuleReloc, ModuleResult,
 };
 use cranelift::object::{ObjectModule, ObjectProduct};
+use cranelift_codegen::isa::unwind::UnwindInfo;
 
 use crate::unwind::UnwindContext;
 
 /// A wrapper around a [Module] which adds any defined function to the [UnwindContext].
 pub(crate) struct UnwindModule<T> {
     pub(crate) module: T,
-    unwind_context: UnwindContext,
+    pub unwind_context: UnwindContext,
     function_sizes: HashMap<FuncId, u32>,
 }
 
@@ -29,6 +30,10 @@ impl<T: Module> UnwindModule<T> {
             unwind_context,
             function_sizes: HashMap::new(),
         }
+    }
+
+    pub fn add_unwind_info(&mut self, func_id: FuncId, unwind_info: UnwindInfo) {
+        self.unwind_context.add_unwind_info(func_id, unwind_info, self.module.isa());
     }
 }
 
@@ -112,12 +117,13 @@ impl<T: Module> Module for UnwindModule<T> {
 
     fn define_function_bytes(
         &mut self,
-        _func_id: FuncId,
-        _alignment: u64,
-        _bytes: &[u8],
-        _relocs: &[ModuleReloc],
+        func_id: FuncId,
+        alignment: u64,
+        bytes: &[u8],
+        relocs: &[ModuleReloc],
     ) -> ModuleResult<()> {
-        unimplemented!()
+        self.module.define_function_bytes(func_id, alignment, bytes, relocs)?;
+        Ok(())
     }
 
     fn define_data(&mut self, data_id: DataId, data: &DataDescription) -> ModuleResult<()> {

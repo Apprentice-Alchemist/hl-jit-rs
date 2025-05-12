@@ -12,8 +12,11 @@ use hl_code::NativeFun;
 use hl_sys::hl_thread_info;
 use hl_sys::hl_trap_ctx;
 use hl_sys::vclosure;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 
 use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
+use crate::unwind::UnwindModule;
 use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
 
 mod data;
@@ -161,13 +164,13 @@ fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
     }
 }
 
-pub struct CodegenCtx<'a> {
-    m: &'a mut dyn Module,
+pub struct CodegenCtx<'a, T> {
+    m: &'a mut UnwindModule<T>,
     idxs: Indexes,
 }
 
-impl<'a> CodegenCtx<'a> {
-    pub fn new(m: &'a mut dyn Module) -> Self {
+impl<'a, T: Module> CodegenCtx<'a, T> {
+    pub fn new(m: &'a mut UnwindModule<T>) -> Self {
         let module_context_id = m.declare_anonymous_data(true, false).unwrap();
         let idxs = Indexes {
             module_context_id,
@@ -238,25 +241,34 @@ impl<'a> CodegenCtx<'a> {
                 self.m.define_data(id, &data).unwrap();
                 self.idxs.static_closures.insert(*fid, id);
             }
-        let mut ctx = Context::new();
-        for fun in code.functions.iter() {
-            emit::emit_fun(self.m.isa(), &self.idxs, &code, fun, &mut ctx);
-            if let Err(e) = self
-                .m
-                .define_function(self.idxs.fn_map[&fun.idx].0, &mut ctx)
-            {
-                match e {
-                    cranelift::module::ModuleError::Compilation(e) => {
-                        eprintln!(
-                            "{}",
-                            cranelift::codegen::print_errors::pretty_error(&ctx.func, e)
-                        );
-                        std::process::exit(1);
-                    }
-                    _ => panic!("{e:?}"),
-                }
+        }
+        let isa = self.m.isa();
+        let fns = code.functions.par_iter().map(|fun| {
+            let mut ctx = Context::new();
+                    emit::emit_fun(isa, &self.idxs, &code, fun, &mut ctx);
+                    let res = ctx.compile(isa, &mut Default::default()).unwrap();
+                    let alignment = res.buffer.alignment as u64;
+                    let id = self.idxs.fn_map[&fun.idx].0;
+                    let compiled_code = ctx.take_compiled_code().unwrap();
+                    let unwind_info = compiled_code.create_unwind_info(isa).unwrap();
+                    let buffer = &compiled_code.buffer;
+                    let relocs = buffer
+                        .relocs()
+                        .iter()
+                        .map(|reloc| {
+                            cranelift::module::ModuleReloc::from_mach_reloc(
+                                &reloc, &ctx.func, id,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                (id, compiled_code, relocs, unwind_info)
+        }).collect::<Vec<_>>();
+        for (func_id, compiled_code, relocs, unwind_info) in fns {
+            if let Some(unwind_info) = unwind_info {
+                let isa = self.m.isa();
+                self.m.add_unwind_info(func_id, unwind_info);
             }
-            self.m.clear_context(&mut ctx);
+            self.m.define_function_bytes(func_id, compiled_code.buffer.alignment as u64, compiled_code.buffer.data(), &relocs).unwrap();
         }
         data::define_module_context(&mut self.m, &code, &mut self.idxs);
         let entrypoint_id = self.emit_entrypoint(&code);
