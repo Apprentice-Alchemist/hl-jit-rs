@@ -141,7 +141,7 @@ impl<'a> EmitCtx<'a> {
                 regs.insert(
                     Reg(idx),
                     (
-                        if *needs_stack {
+                        if true {
                             RegStorage::Stack(builder.create_sized_stack_slot(StackSlotData {
                                 kind: StackSlotKind::ExplicitSlot,
                                 size: t.bytes(),
