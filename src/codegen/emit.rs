@@ -12,32 +12,47 @@ use cranelift::{
     codegen::{ir, ir::StackSlot},
     module::Module,
 };
+use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::Context;
 use hl_code::FunIdx;
 
 use crate::code::TypeFun;
 use crate::code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx};
 use crate::codegen::cranelift_type;
-use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, venum, vvirtual};
+use hl_sys::{
+    hl_thread_info, hl_trap_ctx, hl_type, true_, varray, vclosure, vdynamic, venum, vvirtual,
+};
 
 use super::{CodegenCtx, Indexes};
 
-fn declare_func_in_func(
-    this: &dyn Module,
+fn declare_func_in_func_with_sig(
     func_id: FuncId,
+    signature: &Signature,
+    colocated: bool,
     func: &mut ir::Function,
 ) -> ir::FuncRef {
-    let decl = this.declarations().get_function_decl(func_id);
-    let signature = func.import_signature(decl.signature.clone());
+    let signature = func.import_signature(signature.clone());
     let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
         namespace: 0,
         index: func_id.as_u32(),
     });
-    let colocated = decl.linkage.is_final();
     func.import_function(ir::ExtFuncData {
         name: ir::ExternalName::user(user_name_ref),
         signature,
         colocated,
+    })
+}
+
+fn declare_data_in_func(data: DataId, colocated: bool, func: &mut ir::Function) -> ir::GlobalValue {
+    let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
+        namespace: 1,
+        index: data.as_u32(),
+    });
+    func.create_global_value(ir::GlobalValueData::Symbol {
+        name: ir::ExternalName::user(user_name_ref),
+        offset: ir::immediates::Imm64::new(0),
+        colocated,
+        tls: false,
     })
 }
 
@@ -59,10 +74,11 @@ thread_local! {
     static F_CTX: RefCell<FunctionBuilderContext> = RefCell::new(FunctionBuilderContext::new());
 }
 
-pub fn emit_fun(c_ctx: &CodegenCtx, code: &Code, fun: &HLFunction, ctx: &mut Context) {
+pub fn emit_fun(isa: &dyn TargetIsa, idxs: &Indexes, code: &Code, fun: &HLFunction, ctx: &mut Context) {
     F_CTX.with_borrow_mut(|f_ctx| {
-        c_ctx.m.clear_context(ctx);
-        let mut emit_ctx = EmitCtx::new(c_ctx, code, fun, ctx, f_ctx);
+        ctx.clear();
+        ctx.func.signature.call_conv = isa.default_call_conv();
+        let mut emit_ctx = EmitCtx::new(isa, idxs, code, fun, ctx, f_ctx);
         emit_ctx.translate_body();
         emit_ctx.finish();
     });
@@ -71,7 +87,7 @@ pub fn emit_fun(c_ctx: &CodegenCtx, code: &Code, fun: &HLFunction, ctx: &mut Con
 use super::ObjLayout;
 
 struct EmitCtx<'a> {
-    m: &'a dyn Module,
+    isa: &'a dyn TargetIsa,
     code: &'a Code,
     idxs: &'a Indexes,
     fun: &'a HLFunction,
@@ -105,19 +121,14 @@ impl<'a> std::ops::DerefMut for EmitCtx<'a> {
 
 impl<'a> EmitCtx<'a> {
     pub fn new(
-        c_ctx: &'a CodegenCtx,
+        isa: &'a dyn TargetIsa,
+        idxs: &'a Indexes,
         code: &'a Code,
         fun: &'a HLFunction,
         ctx: &'a mut Context,
         f_ctx: &'a mut FunctionBuilderContext,
     ) -> EmitCtx<'a> {
-        let CodegenCtx { m, idxs, .. } = c_ctx;
-
-        let function_signature = m
-            .declarations()
-            .get_function_decl(idxs.fn_map[&fun.idx])
-            .signature
-            .clone();
+        let function_signature = idxs.fn_map[&fun.idx].1.clone();
         ctx.func.signature = function_signature.clone();
         ctx.func.name = UserFuncName::testcase(format!("hl_fun@{}", fun.idx.0));
 
@@ -168,7 +179,7 @@ impl<'a> EmitCtx<'a> {
         }
 
         EmitCtx {
-            m,
+            isa,
             code,
             idxs,
             fun,
@@ -255,6 +266,10 @@ impl<'a> EmitCtx<'a> {
         }
     }
 
+    fn make_signature(&self) -> Signature {
+        Signature::new(self.isa.default_call_conv())
+    }
+
     pub fn translate_body(&mut self) {
         for (pos, op) in self.fun.opcodes.iter().enumerate() {
             self.pos = pos;
@@ -305,21 +320,25 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Bytes { dst, idx } => {
                     let gval = if let Some(_) = self.code.bytes {
-                        self.m.declare_data_in_func(
+                        declare_data_in_func(
                             self.idxs.bytes[idx.0 as usize],
+                            true,
                             self.builder.func,
                         )
                     } else {
-                        self.m
-                            .declare_data_in_func(self.idxs.ustr[idx.0 as usize], self.builder.func)
+                        declare_data_in_func(
+                            self.idxs.ustr[idx.0 as usize],
+                            true,
+                            self.builder.func,
+                        )
                     };
                     let val = self.ins().global_value(types::I64, gval);
                     self.store_reg(dst, val);
                 }
                 OpCode::String { dst, idx } => {
-                    let gval = self
-                        .m
-                        .declare_data_in_func(self.idxs.ustr[idx.0], self.builder.func);
+                    let gval = 
+                        
+                        declare_data_in_func(self.idxs.ustr[idx.0], true, self.builder.func);
                     let val = self.ins().global_value(types::I64, gval);
                     self.store_reg(dst, val);
                 }
@@ -540,7 +559,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::CallClosure { dst, closure, args } => {
                     match self.reg_type(closure) {
                         HLType::Dynamic => {
-                            let slot_size = self.m.isa().pointer_bytes() as u32 * args.len() as u32;
+                            let slot_size = self.isa.pointer_bytes() as u32 * args.len() as u32;
                             let args_slot = self.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot,
                                 slot_size,
@@ -599,7 +618,7 @@ impl<'a> EmitCtx<'a> {
                                         closure_val,
                                         offset_of!(vclosure, value) as i32,
                                     );
-                                    let mut sig = ecx.m.make_signature();
+                                    let mut sig = ecx.make_signature();
                                     sig.params.push(AbiParam::new(types::I64));
                                     super::fill_signature(
                                         ecx.code,
@@ -626,7 +645,7 @@ impl<'a> EmitCtx<'a> {
                                     }
                                 },
                                 |ecx| {
-                                    let mut sig = ecx.m.make_signature();
+                                    let mut sig = ecx.make_signature();
                                     super::fill_signature(
                                         ecx.code,
                                         &mut sig,
@@ -657,7 +676,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::StaticClosure { dst, fid } => {
                     let id = self.idxs.static_closures[fid];
-                    let gv = self.m.declare_data_in_func(id, self.builder.func);
+                    let gv = declare_data_in_func(id, true, self.builder.func);
                     let val = self.ins().global_value(types::I64, gv);
                     self.store_reg(dst, val);
                 }
@@ -665,8 +684,13 @@ impl<'a> EmitCtx<'a> {
                     let alloc_ref = self.native_fun("hl_alloc_closure_ptr");
                     let ty_id = self.idxs.fn_type_map[idx];
                     let ty_val = self.type_val(ty_id);
-                    let func_id = self.idxs.fn_map[idx];
-                    let func_ref = declare_func_in_func(self.m, func_id, self.builder.func);
+                    let (func_id, signature) = &self.idxs.fn_map[idx];
+                    let func_ref = declare_func_in_func_with_sig(
+                        *func_id,
+                        signature,
+                        false,
+                        self.builder.func,
+                    );
                     let func_addr = self.ins().func_addr(types::I64, func_ref);
                     let obj_val = self.load_reg(obj);
                     let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
@@ -709,18 +733,14 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
                 OpCode::GetGlobal { dst, idx } => {
-                    let global_value = self
-                        .m
-                        .declare_data_in_func(self.idxs.globals[idx], self.builder.func);
+                    let global_value = declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
                     let val = self.ins().symbol_value(types::I64, global_value);
                     let ty = self.reg_cl_ty(dst);
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
                     self.store_reg(dst, val);
                 }
                 OpCode::SetGlobal { idx, val } => {
-                    let global_value = self
-                        .m
-                        .declare_data_in_func(self.idxs.globals[idx], self.builder.func);
+                    let global_value = declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
                     let global_value = self.ins().symbol_value(types::I64, global_value);
                     let val = self.load_reg(val);
                     self.ins().store(MemFlags::new(), val, global_value, 0);
@@ -1196,7 +1216,7 @@ impl<'a> EmitCtx<'a> {
                                     let dest_align = layout.align() as u8;
                                     let src_align = layout.align() as u8;
                                     let non_overlapping = true;
-                                    let target_config = self.m.target_config();
+                                    let target_config = self.isa.frontend_config();
                                     let val_val = self.load_reg(val);
                                     self.emit_small_memory_copy(
                                         target_config,
@@ -1425,7 +1445,7 @@ impl<'a> EmitCtx<'a> {
                         let dest_align = layout.layout.align() as u8;
                         let src_align = layout.layout.align() as u8;
                         let non_overlapping = true;
-                        let target_config = self.m.target_config();
+                        let target_config = self.isa.frontend_config();
                         self.emit_small_memory_copy(
                             target_config,
                             addr,
@@ -1527,7 +1547,8 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn emit_call(&mut self, dst: &Reg, f: &FunIdx, args: &[Reg]) {
-        let f_ref = declare_func_in_func(self.m, self.idxs.fn_map[f], self.builder.func);
+        let (func_id, signature) = &self.idxs.fn_map[f];
+        let f_ref = declare_func_in_func_with_sig(*func_id, signature, false, self.builder.func);
         let args = &args
             .iter()
             .map(|r| self.load_reg(r))
@@ -1605,14 +1626,14 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn native_fun(&mut self, name: &str) -> FuncRef {
-        declare_func_in_func(self.m, self.idxs.native_calls[name], self.builder.func)
+        let (func_id, signature) = &self.idxs.native_calls[name];
+        // native functions are not colocated
+        declare_func_in_func_with_sig(*func_id, signature, false, self.builder.func)
     }
 
     fn hash(&mut self, field_name: &UStrIdx) -> Value {
         let field_name_data_id = self.idxs.ustr[field_name.0];
-        let field_name_global_value = self
-            .m
-            .declare_data_in_func(field_name_data_id, self.builder.func);
+        let field_name_global_value = declare_data_in_func(field_name_data_id, true, self.builder.func);
         let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
         let hash_ref = self.native_fun("hl_hash");
         let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
@@ -1620,9 +1641,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn type_val(&mut self, ty: TypeIdx) -> Value {
-        let gv = self
-            .m
-            .declare_data_in_func(self.idxs.types[ty.0], self.builder.func);
+        let gv = declare_data_in_func(self.idxs.types[ty.0], true, self.builder.func);
         self.ins().global_value(types::I64, gv)
     }
 
@@ -1747,8 +1766,13 @@ impl<'a> EmitCtx<'a> {
                         a_val_orig,
                         b_val_orig,
                     );
-                    let f_ref =
-                        declare_func_in_func(self.m, self.idxs.fn_map[&fun_idx], self.builder.func);
+                    let (func_id, signature) = &self.idxs.fn_map[&fun_idx];
+                    let f_ref = declare_func_in_func_with_sig(
+                        *func_id,
+                        signature,
+                        false,
+                        self.builder.func,
+                    );
                     let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
                     let cmp_val = self.inst_results(inst)[0];
                     let val = self.ins().icmp_imm(int_cc, cmp_val, 0);
@@ -2024,7 +2048,7 @@ impl<'a> EmitCtx<'a> {
                     proto_val,
                     (fid.0 as usize * size_of::<*mut u8>()) as i32,
                 );
-                let mut sig = self.m.make_signature();
+                let mut sig = self.make_signature();
                 sig.params.push(AbiParam::new(types::I64));
                 super::fill_signature(
                     self.code,
@@ -2056,7 +2080,7 @@ impl<'a> EmitCtx<'a> {
                 self.emit_brif(
                     fun_ptr,
                     |this| {
-                        let mut sig = this.m.make_signature();
+                        let mut sig = this.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         super::fill_signature(
                             this.code,
@@ -2083,7 +2107,7 @@ impl<'a> EmitCtx<'a> {
                         }
                     },
                     |this| {
-                        let pointer_bytes = this.m.isa().pointer_bytes() as u32;
+                        let pointer_bytes = this.isa.pointer_bytes() as u32;
                         let stack_slot = this.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             pointer_bytes * args.len() as u32,

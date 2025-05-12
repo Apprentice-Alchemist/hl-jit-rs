@@ -33,10 +33,10 @@ struct Indexes {
     types: Vec<DataId>,
     ustr: Vec<DataId>,
     bytes: Vec<DataId>,
-    fn_map: BTreeMap<FunIdx, FuncId>,
+    fn_map: BTreeMap<FunIdx, (FuncId, Signature)>,
     fn_type_map: BTreeMap<FunIdx, TypeIdx>,
     globals: BTreeMap<GlobalIdx, DataId>,
-    native_calls: BTreeMap<&'static str, FuncId>,
+    native_calls: BTreeMap<&'static str, (FuncId, Signature)>,
     hash_locations: BTreeMap<UStrIdx, Vec<(DataId, usize)>>,
     static_closures: BTreeMap<FunIdx, DataId>,
     obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
@@ -150,15 +150,14 @@ static OTHER_NATIVES: &[(&str, &[Type], &[Type])] = &[
 ];
 
 fn build_native_calls(m: &mut dyn Module, idxs: &mut Indexes) {
-    let mut signature = m.make_signature();
     for (name, args, ret) in LIBHL_NATIVE_CALLS.iter().chain(OTHER_NATIVES.iter()) {
+        let mut signature = m.make_signature();
         signature.params = args.iter().map(|t| AbiParam::new(*t)).collect();
         signature.returns = ret.iter().map(|t| AbiParam::new(*t)).collect();
         let id = m
             .declare_function(name, Linkage::Import, &signature)
             .unwrap();
-        idxs.native_calls.insert(name, id);
-        m.clear_signature(&mut signature);
+        idxs.native_calls.insert(name, (id, signature));
     }
 }
 
@@ -200,7 +199,7 @@ impl<'a> CodegenCtx<'a> {
                 .m
                 .declare_function(&format!("fun@{}", fun.idx.0), Linkage::Local, &signature)
                 .unwrap();
-            self.idxs.fn_map.insert(fun.idx, id);
+            self.idxs.fn_map.insert(fun.idx, (id, signature));
             self.idxs.fn_type_map.insert(fun.idx, fun.ty);
         }
         for native @ NativeFun {
@@ -214,16 +213,15 @@ impl<'a> CodegenCtx<'a> {
                 .m
                 .declare_function(&symbol_name, Linkage::Import, &signature)
                 .unwrap();
-            self.idxs.fn_map.insert(fun, id);
+            self.idxs.fn_map.insert(fun, (id, signature));
             self.idxs.fn_type_map.insert(fun, ty);
         }
-        let mut ctx = Context::new();
         for fun in code.functions.iter() {
             for fid in fun.static_closures.iter() {
                 if self.idxs.static_closures.contains_key(fid) {
                     continue;
                 }
-                let func_id = self.idxs.fn_map[fid];
+                let func_id = self.idxs.fn_map[fid].0;
 
                 let id = self.m.declare_anonymous_data(false, false).unwrap();
                 let mut data = DataDescription::new();
@@ -240,8 +238,13 @@ impl<'a> CodegenCtx<'a> {
                 self.m.define_data(id, &data).unwrap();
                 self.idxs.static_closures.insert(*fid, id);
             }
-            emit::emit_fun(self, &code, fun, &mut ctx);
-            if let Err(e) = self.m.define_function(self.idxs.fn_map[&fun.idx], &mut ctx) {
+        let mut ctx = Context::new();
+        for fun in code.functions.iter() {
+            emit::emit_fun(self.m.isa(), &self.idxs, &code, fun, &mut ctx);
+            if let Err(e) = self
+                .m
+                .define_function(self.idxs.fn_map[&fun.idx].0, &mut ctx)
+            {
                 match e {
                     cranelift::module::ModuleError::Compilation(e) => {
                         eprintln!(
@@ -261,6 +264,11 @@ impl<'a> CodegenCtx<'a> {
             self.emit_main(&code, entrypoint_id);
         }
         entrypoint_id
+    }
+
+    fn native_fun_ref(&mut self, name: &str, func: &mut ir::Function) -> ir::FuncRef {
+        let (id, signature) = &self.idxs.native_calls[name];
+        self.m.declare_func_in_func(*id, func)
     }
 
     fn emit_main(&mut self, code: &Code, entrypoint_id: FuncId) -> FuncId {
@@ -287,8 +295,7 @@ impl<'a> CodegenCtx<'a> {
             1,
         ));
 
-        let hl_global_init_id = self.idxs.native_calls["hl_global_init"];
-        let hl_global_init_ref = self.m.declare_func_in_func(hl_global_init_id, bcx.func);
+        let hl_global_init_ref = self.native_fun_ref("hl_global_init", bcx.func);
         bcx.ins().call(hl_global_init_ref, &[]);
 
         // let hlc_static_call_id = self.idxs.native_calls["hlc_static_call"];
@@ -314,13 +321,11 @@ impl<'a> CodegenCtx<'a> {
         // let hl_setup_exception_ref = self.m.declare_func_in_func(hl_setup_exception_id, bcx.func);
         // bcx.ins().call(hl_setup_exception_ref, &[hlc_resolve_symbol_val, hlc_capture_stack_val]);
 
-        let hl_register_thread_id = self.idxs.native_calls["hl_register_thread"];
-        let hl_register_thread_ref = self.m.declare_func_in_func(hl_register_thread_id, bcx.func);
+        let hl_register_thread_ref = self.native_fun_ref("hl_register_thread", bcx.func);
         let stack_top = bcx.ins().stack_addr(types::I64, dummy_slot, 0);
         bcx.ins().call(hl_register_thread_ref, &[stack_top]);
 
-        let hl_sys_init_id = self.idxs.native_calls["hl_sys_init"];
-        let hl_sys_init_ref = self.m.declare_func_in_func(hl_sys_init_id, bcx.func);
+        let hl_sys_init_ref = self.native_fun_ref("hl_sys_init", bcx.func);
 
         let argc = bcx.block_params(entry_block)[0];
         let argv = bcx.block_params(entry_block)[1];
@@ -329,10 +334,8 @@ impl<'a> CodegenCtx<'a> {
         let zero = bcx.ins().iconst(types::I64, 0);
         bcx.ins().call(hl_sys_init_ref, &[argv, argc, zero]);
 
-        let hl_get_thread_id = self.idxs.native_calls["hl_get_thread"];
-        let hl_get_thread_ref = self.m.declare_func_in_func(hl_get_thread_id, bcx.func);
-        let setjmp_id = self.idxs.native_calls["setjmp"];
-        let setjmp_ref = self.m.declare_func_in_func(setjmp_id, bcx.func);
+        let hl_get_thread_ref = self.native_fun_ref("hl_get_thread", bcx.func);
+        let setjmp_ref = self.native_fun_ref("setjmp", bcx.func);
 
         let end_block = bcx.create_block();
         bcx.append_block_param(end_block, types::I32);
@@ -395,9 +398,8 @@ impl<'a> CodegenCtx<'a> {
                 offset_of!(hl_thread_info, exc_value) as i32,
             );
 
-            let hl_print_exception_id = self.idxs.native_calls["hl_print_exception_with_stack"];
             let hl_print_exception_ref =
-                self.m.declare_func_in_func(hl_print_exception_id, bcx.func);
+                self.native_fun_ref("hl_print_exception_with_stack", bcx.func);
             bcx.ins().call(hl_print_exception_ref, &[exc_value]);
 
             let ret = bcx.ins().iconst(types::I32, 1);
@@ -407,8 +409,7 @@ impl<'a> CodegenCtx<'a> {
         bcx.seal_block(end_block);
         bcx.switch_to_block(end_block);
 
-        let hl_global_free_id = self.idxs.native_calls["hl_global_free"];
-        let hl_global_free_ref = self.m.declare_func_in_func(hl_global_free_id, bcx.func);
+        let hl_global_free_ref = self.native_fun_ref("hl_global_free", bcx.func);
         bcx.ins().call(hl_global_free_ref, &[]);
         let rval = bcx.block_params(end_block)[0];
         bcx.ins().return_(&[rval]);
@@ -430,17 +431,15 @@ impl<'a> CodegenCtx<'a> {
         bcx.seal_block(entry_block);
         bcx.switch_to_block(entry_block);
 
-        let hl_alloc_id = self.idxs.native_calls["hl_alloc_init"];
-        let hl_alloc_ref = self.m.declare_func_in_func(hl_alloc_id, bcx.func);
+        let hl_alloc_init_ref = self.native_fun_ref("hl_alloc_init", bcx.func);
         let module_context = self
             .m
             .declare_data_in_func(self.idxs.module_context_id, bcx.func);
         let module_context_val = bcx.ins().global_value(types::I64, module_context);
         assert_eq!(offset_of!(hl_module_context, alloc), 0);
-        bcx.ins().call(hl_alloc_ref, &[module_context_val]);
+        bcx.ins().call(hl_alloc_init_ref, &[module_context_val]);
 
-        let hl_hash_id = self.idxs.native_calls["hl_hash"];
-        let hl_hash_ref = self.m.declare_func_in_func(hl_hash_id, &mut bcx.func);
+        let hl_hash_ref = self.native_fun_ref("hl_hash", bcx.func);
         for (str, locs) in &self.idxs.hash_locations {
             let gv = self.m.declare_data_in_func(self.idxs.ustr[str.0], bcx.func);
             let str_val = bcx.ins().global_value(types::I64, gv);
@@ -454,10 +453,8 @@ impl<'a> CodegenCtx<'a> {
             }
         }
 
-        let init_enum_id = self.idxs.native_calls["hl_init_enum"];
-        let init_enum_ref = self.m.declare_func_in_func(init_enum_id, &mut bcx.func);
-        let init_virtual_id = self.idxs.native_calls["hl_init_virtual"];
-        let init_virtual_ref = self.m.declare_func_in_func(init_virtual_id, &mut bcx.func);
+        let init_enum_ref = self.native_fun_ref("hl_init_enum", bcx.func);
+        let init_virtual_ref = self.native_fun_ref("hl_init_virtual", bcx.func);
         let module_context_gv = self
             .m
             .declare_data_in_func(self.idxs.module_context_id, &mut bcx.func);
@@ -478,8 +475,7 @@ impl<'a> CodegenCtx<'a> {
             }
         }
 
-        let hl_add_root_id = self.idxs.native_calls["hl_add_root"];
-        let hl_add_root_ref = self.m.declare_func_in_func(hl_add_root_id, bcx.func);
+        let hl_add_root_ref = self.native_fun_ref("hl_add_root", bcx.func);
         for (gv, data) in &self.idxs.globals {
             if !code.constants.contains_key(&gv) {
                 let gv = self.m.declare_data_in_func(*data, bcx.func);
@@ -490,7 +486,7 @@ impl<'a> CodegenCtx<'a> {
 
         let f_ref = self
             .m
-            .declare_func_in_func(self.idxs.fn_map[&code.entrypoint], &mut bcx.func);
+            .declare_func_in_func(self.idxs.fn_map[&code.entrypoint].0, &mut bcx.func);
         bcx.ins().call(f_ref, &[]);
         bcx.ins().return_(&[]);
         bcx.finalize();

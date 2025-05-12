@@ -158,7 +158,7 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
             write_fun(
                 m,
                 &mut fun_table_data,
-                idxs.fn_map[&fun.idx],
+                idxs.fn_map[&fun.idx].0,
                 fun.idx.0 * m.isa().pointer_bytes() as usize,
             );
             write_data(
@@ -172,7 +172,7 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
             write_fun(
                 m,
                 &mut fun_table_data,
-                idxs.fn_map[fidx],
+                idxs.fn_map[fidx].0,
                 fidx.0 * m.isa().pointer_bytes() as usize,
             );
             write_data(
