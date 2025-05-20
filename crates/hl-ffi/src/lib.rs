@@ -9,6 +9,7 @@ use hl_sys::{
 
 use sysv::CALL_REGS_COUNT;
 use sysv::FPU_CALL_REGS;
+use sysv::static_call_impl_naked;
 
 #[derive(Copy, Clone)]
 pub union CpuValue {
@@ -132,36 +133,36 @@ pub extern "C" fn static_call(
     match unsafe { (*ft.fun().ret).kind } {
         hl_sys::hl_type_kind_HVOID => {
             unsafe {
-                static_call_void(fun, stack_top.cast(), stack_bottom.cast());
+                static_call_impl::<()>(fun, stack_top.cast(), stack_bottom.cast());
             }
             return std::ptr::null_mut();
         }
         hl_sys::hl_type_kind_HUI8 => unsafe {
-            (*out).v.ui8 = static_call_u8(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.ui8 = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HUI16 => unsafe {
-            (*out).v.ui16 = static_call_u16(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.ui16 = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HI32 => unsafe {
-            (*out).v.i = static_call_i32(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.i = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HI64 | hl_sys::hl_type_kind_HGUID => unsafe {
-            (*out).v.i64_ = static_call_i64(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.i64_ = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HF32 => unsafe {
-            (*out).v.f = static_call_f32(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.f = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HF64 => unsafe {
-            (*out).v.d = static_call_f64(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.d = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HBOOL => unsafe {
-            (*out).v.b = static_call_bool(fun, stack_top.cast(), stack_bottom.cast());
+            (*out).v.b = static_call_impl(fun, stack_top.cast(), stack_bottom.cast());
             return (&raw mut (*out).v).cast();
         },
         hl_sys::hl_type_kind_HBYTES
@@ -178,72 +179,11 @@ pub extern "C" fn static_call(
         | hl_sys::hl_type_kind_HNULL
         | hl_sys::hl_type_kind_HMETHOD
         | hl_sys::hl_type_kind_HSTRUCT => {
-            return unsafe { static_call_ptr(fun, stack_top.cast(), stack_bottom.cast()) };
+            return unsafe { static_call_impl(fun, stack_top.cast(), stack_bottom.cast()) };
         }
         hl_sys::hl_type_kind_HPACKED => panic!(),
         _ => panic!(),
     }
-}
-
-#[expect(
-    clashing_extern_declarations,
-    reason = "static_call_impl is polymorphic"
-)]
-unsafe extern "C" {
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_void(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    );
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_f32(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> f32;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_f64(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> f64;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_ptr(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> *mut c_void;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_i64(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> i64;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_i32(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> i32;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_u8(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> u8;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_u16(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> u16;
-    #[link_name = "static_call_impl"]
-    unsafe fn static_call_bool(
-        fun_ptr: *const c_void,
-        stack_begin: *const u8,
-        stack_end: *const u8,
-    ) -> bool;
 }
 
 #[unsafe(export_name = "hlc_get_wrapper")]

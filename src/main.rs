@@ -199,11 +199,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .args([
                         "-L",
                         "/usr/local/lib",
-                        // "-L",
-                        // "target/debug",
+                        "-L",
+                        "target/debug",
                         // order is, unfortunately, relevant when GNU ld is used
                         object_path.to_str().unwrap(),
-                        // "-lhl_ffi",
+                        "-lhl_ffi",
                         "-lhl",
                         "-lm",
                         "-o",
@@ -258,9 +258,8 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
         ) -> *mut c_void;
         unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
     }
+    let global = hl_sys::GLOBAL.init();
     unsafe {
-        // hl_sys::hl_global_init();
-        let global = hl_sys::GLOBAL.init();
         #[cfg(feature = "hl-ffi")]
         hl_sys::hl_setup_callbacks(
             hl_ffi::static_call as *mut c_void,
@@ -278,81 +277,20 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
             args.len() as i32,
             c_file.as_ptr().cast_mut().cast(),
         );
-        let foo = global.with_thread(|thread| {
-            let ty = todo!();
-            let c = hl_sys::VClosure::new(ty, fun.cast_const());
-            match thread.dyn_call_safe(&c, &[]) {
-                Ok(_) => (),
-                Err(e) => {
-                    eprintln!("Uncaught exception: {}", e.to_string(),);
-                    let stack = thread.exception_stack();
-                    for (pos, elem) in stack.0.as_slice::<hl_sys::UStr>().iter().enumerate() {
-                        println!("  {pos}: {}", elem);
-                    }
-                }
-            }
-        });
-        let mut stack_top = 0u8;
-        hl_sys::hl_register_thread(core::ptr::from_mut(&mut stack_top).cast());
-
-        extern "C" fn segv_handler(signum: c_int) {
-            if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                unsafe {
-                    hl_sys::hl_throw(&raw mut NULL_ACCESS_EXC);
-                }
-            }
-        }
-        extern "C" fn sigill_handler(signum: c_int) {
-            if let Some(t) = unsafe { hl_get_thread().as_ref() } {
-                unsafe {
-                    hl_sys::hl_throw(&raw mut SIGILL_EXC);
-                }
-            }
-        }
-        // libc::signal(libc::SIGSEGV, segv_handler as *mut u8 as usize);
-        // libc::signal(libc::SIGILL, sigill_handler as *mut u8 as usize);
-
-        let mut is_exception = false;
-
-        let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
-            fun: &mut hl_type_fun {
-                args: null_mut(),
-                ret: &raw mut hl_sys::hlt_void,
-                nargs: 0,
-                parent: null_mut(),
-                closure_type: core::mem::zeroed(),
-                closure: core::mem::zeroed(),
-            },
-        };
-
-        let mut t = hl_type {
-            kind: hl_type_kind_HFUN,
-            __bindgen_anon_1,
-            vobj_proto: null_mut(),
-            mark_bits: null_mut(),
-        };
-        let mut c = vclosure {
-            t: &mut t,
-            fun,
-            hasValue: 0,
-            stackCount: 0,
-            value: null_mut(),
-        };
-        let ret = hl_sys::hl_dyn_call_safe(&mut c, null_mut(), 0, &mut is_exception);
-        if is_exception {
-            let stack = hl_sys::hl_exception_stack().as_ref().unwrap();
-            eprintln!(
-                "Uncaught exception: {:#?}",
-                CStr::from_ptr(hl_sys::hl_to_utf8(hl_sys::hl_to_string(ret)))
-            );
-            for (pos, elem) in stack.as_slice::<*const u16>().iter().enumerate() {
-                println!("  {pos}: {:#?}", CStr::from_ptr(hl_sys::hl_to_utf8(*elem)));
-            }
-            // hl_sys::hl_global_free();
-            Err(())
-        } else {
-            // hl_sys::hl_global_free();
-            Ok(())
-        }
     }
+    global.with_current_thread(|thread| {
+        let ty = hl_sys::Type::fun(&[], hl_sys::Type::void());
+        let c = hl_sys::VClosure::new(&ty, fun.cast_const());
+        match thread.dyn_call_safe(&c, &[]) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("Uncaught exception: {}", e.to_string(),);
+                let stack = thread.exception_stack();
+                for (pos, elem) in stack.into_iter().enumerate() {
+                    println!("  {pos}: {}", elem);
+                }
+            }
+        }
+    });
+    Ok(())
 }
