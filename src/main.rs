@@ -166,9 +166,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             })?;
         } else {
             let object_path = time("write_object", || {
-                let bytes = product.emit()?;
-                let mut file = tempfile::NamedTempFile::with_suffix(".o").unwrap();
-                file.as_file_mut().write_all(&bytes).unwrap();
+                let mut file = tempfile::NamedTempFile::with_suffix(".o")?;
+                product
+                    .object
+                    .write_stream(std::io::BufWriter::new(file.as_file_mut()))?;
                 Ok::<TempPath, Box<dyn Error>>(file.into_temp_path())
             })?;
 
