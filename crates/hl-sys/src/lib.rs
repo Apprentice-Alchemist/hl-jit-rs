@@ -1,10 +1,10 @@
 mod sys {
-    #![allow(non_upper_case_globals)]
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
-    #![allow(improper_ctypes, reason = "triggered by bindgen generated u128")]
-    #![allow(dead_code)]
-    #![allow(unsafe_op_in_unsafe_fn)]
+    #![expect(non_upper_case_globals)]
+    #![expect(non_camel_case_types)]
+    #![expect(non_snake_case)]
+    #![expect(improper_ctypes, reason = "triggered by bindgen generated u128")]
+    #![expect(unsafe_op_in_unsafe_fn)]
+    #![expect(unnecessary_transmutes)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
     impl varray {
