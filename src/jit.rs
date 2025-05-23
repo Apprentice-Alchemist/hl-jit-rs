@@ -13,10 +13,9 @@ use crate::codegen::CodegenCtx;
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(
         &[
-            // This speeds up compilation by a lot
             ("regalloc_algorithm", "backtracking"),
             ("enable_verifier", "false"),
-            ("opt_level", "speed")
+            ("opt_level", "speed"),
         ],
         cranelift::module::default_libcall_names(),
     )
