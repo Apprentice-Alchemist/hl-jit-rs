@@ -85,6 +85,8 @@ core::arch::global_asm!(
     "   push rdi",
     "   lea rdx, [rbp + 16]",
     "   mov rsi, rsp",
+    "   sub rsp, 16",
+    "   mov rcx, rsp",
     "   mov r10, [rdi]", // ->t
     "   mov r10, [r10 + 8]", // ->fun
     "   mov r10, [r10 + 8]", // ->ret
@@ -93,15 +95,15 @@ core::arch::global_asm!(
     "   jz 0f",
     "   cmp r10d, 6",
     "   jz 0f",
-    "   call {wrapper_ptr}",
+    "   call {wrapper_inner}",
     "   jmp 1f",
-    "   0: call {wrapper_f64}",
+    "   0: call {wrapper_inner}",
+    "   movsd xmm0, [rax]",
     "   1:",
     "   mov rsp, rbp",
     "   pop rbp",
     "	.cfi_def_cfa rsp, 8",
     "   ret",
     "   .cfi_endproc",
-    wrapper_ptr = sym crate::wrapper_ptr,
-    wrapper_f64 = sym crate::wrapper_f64,
+    wrapper_inner = sym crate::wrapper_inner,
 );

@@ -1,6 +1,6 @@
 mod sysv;
 
-use std::{ffi::c_void, mem::MaybeUninit, ptr::null_mut};
+use std::{ffi::c_void, ptr::null_mut};
 
 use hl_sys::{
     hl_is_dynamic, hl_type, hl_type_kind_HF32, hl_type_kind_HF64, hl_wrapper_call,
@@ -200,10 +200,11 @@ struct Registers {
     fpu_regs: [FloatValue; FPU_CALL_REGS],
 }
 
-extern "C" fn wrapper_ptr(
+extern "C" fn wrapper_inner(
     c: *const vclosure_wrapper,
     regs: &Registers,
     stack_args: *const Value,
+    ret: *mut vdynamic,
 ) -> *mut c_void {
     let mut args = Vec::new();
     let t = unsafe { &*((*c).cl).t };
@@ -256,35 +257,32 @@ extern "C" fn wrapper_ptr(
             return hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), null_mut());
         },
         hl_sys::hl_type_kind_HUI8 => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.ptr;
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (*ret).v.ptr;
         },
         hl_sys::hl_type_kind_HUI16 => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.ptr;
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (*ret).v.ptr;
         },
         hl_sys::hl_type_kind_HI32 => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.ptr;
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (*ret).v.ptr;
         },
         hl_sys::hl_type_kind_HI64 | hl_sys::hl_type_kind_HGUID => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.ptr;
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (*ret).v.ptr;
         },
-        hl_sys::hl_type_kind_HF32 => {
-            panic!()
-        }
-        hl_sys::hl_type_kind_HF64 => {
-            panic!()
-        }
+        hl_sys::hl_type_kind_HF32 => unsafe {
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (&raw mut (*ret).v).cast();
+        },
+        hl_sys::hl_type_kind_HF64 => unsafe {
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (&raw mut (*ret).v).cast();
+        },
         hl_sys::hl_type_kind_HBOOL => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.ptr;
+            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), ret);
+            return (*ret).v.ptr;
         },
         hl_sys::hl_type_kind_HBYTES
         | hl_sys::hl_type_kind_HDYN
@@ -303,71 +301,6 @@ extern "C" fn wrapper_ptr(
             return hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), null_mut());
         },
         hl_sys::hl_type_kind_HPACKED => panic!(),
-        _ => panic!(),
-    }
-}
-extern "C" fn wrapper_f64(
-    c: *const vclosure_wrapper,
-    regs: &Registers,
-    stack_args: *const Value,
-) -> f64 {
-    let mut args = Vec::new();
-    let t = unsafe { &*((*c).cl).t };
-    let mut num_cpu_args = 1;
-    let mut num_fpu_args = 0;
-    let mut num_stack_args = 0;
-    for arg in t.fun().args() {
-        if unsafe { hl_is_dynamic(core::ptr::from_ref(*arg).cast_mut()) } {
-            if num_cpu_args < CALL_REGS_COUNT {
-                args.push(unsafe { regs.cpu_regs[num_cpu_args].ptr });
-                num_cpu_args += 1;
-            } else {
-                unsafe {
-                    args.push(stack_args.add(num_stack_args).read().cpu.ptr);
-                }
-                num_stack_args += 1;
-            }
-        } else if arg.kind == hl_type_kind_HF32 || arg.kind == hl_type_kind_HF64 {
-            if num_fpu_args < FPU_CALL_REGS {
-                args.push(
-                    core::ptr::from_ref(&regs.fpu_regs[num_fpu_args])
-                        .cast_mut()
-                        .cast(),
-                );
-                num_fpu_args += 1;
-            } else {
-                unsafe {
-                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
-                }
-                num_stack_args += 1;
-            }
-        } else {
-            if num_cpu_args < CALL_REGS_COUNT {
-                args.push(
-                    core::ptr::from_ref(&regs.cpu_regs[num_cpu_args])
-                        .cast_mut()
-                        .cast(),
-                );
-                num_cpu_args += 1;
-            } else {
-                unsafe {
-                    args.push(stack_args.add(num_stack_args).cast_mut().cast());
-                }
-                num_stack_args += 1;
-            }
-        }
-    }
-    match unsafe { (*t.fun().ret).kind } {
-        hl_sys::hl_type_kind_HF32 => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.d;
-        },
-        hl_sys::hl_type_kind_HF64 => unsafe {
-            let mut ret: vdynamic = MaybeUninit::zeroed().assume_init();
-            hl_wrapper_call(c.cast_mut().cast(), args.as_mut_ptr(), &raw mut ret);
-            return ret.v.d;
-        },
         _ => panic!(),
     }
 }

@@ -79,6 +79,8 @@ core::arch::global_asm!(
     "   str x0, [sp, #-8]!",
     "   add x2, fp, 16",
     "   mov x1, sp",
+    "   sub sp, sp, 16",
+    "   mov x3, sp",
     "   ldr x9, [x0]", // ->t
     "   ldr x9, [x9, 8]", // ->fun
     "   ldr x9, [x9, 8]", // ->ret
@@ -89,7 +91,8 @@ core::arch::global_asm!(
     "   beq 0f",
     "   bl {wrapper_ptr}",
     "   b 1f",
-    "   0: bl {wrapper_f64}",
+    "   0: bl {wrapper_ptr}",
+    "   ldr d0, [x0]",
     "   1:",
     "   mov sp, fp",
     "   ldp fp, lr, [sp], #32",
@@ -97,5 +100,4 @@ core::arch::global_asm!(
     "   ret",
     "   .cfi_endproc",
     wrapper_ptr = sym crate::wrapper_ptr,
-    wrapper_f64 = sym crate::wrapper_f64,
 );
