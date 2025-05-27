@@ -20,8 +20,6 @@ mod sys {
         }
     }
 
-    unsafe impl Sync for vdynamic {}
-
     impl hl_type {
         pub fn fun(&self) -> &hl_type_fun {
             match self.kind {
