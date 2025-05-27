@@ -33,7 +33,8 @@ impl<T: Module> UnwindModule<T> {
     }
 
     pub fn add_unwind_info(&mut self, func_id: FuncId, unwind_info: UnwindInfo) {
-        self.unwind_context.add_unwind_info(func_id, unwind_info, self.module.isa());
+        self.unwind_context
+            .add_unwind_info(func_id, unwind_info, self.module.isa());
     }
 }
 
@@ -122,7 +123,10 @@ impl<T: Module> Module for UnwindModule<T> {
         bytes: &[u8],
         relocs: &[ModuleReloc],
     ) -> ModuleResult<()> {
-        self.module.define_function_bytes(func_id, alignment, bytes, relocs)?;
+        self.module
+            .define_function_bytes(func_id, alignment, bytes, relocs)?;
+        self.function_sizes
+            .insert(func_id, bytes.len().try_into().unwrap());
         Ok(())
     }
 
