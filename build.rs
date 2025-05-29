@@ -7,6 +7,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .compile("ffi_callbacks");
         println!("cargo::rustc-link-lib=ffi");
     }
-    println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/local/lib");
+    if std::env::var_os("CARGO_CFG_WINDOWS").is_none() {
+        println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/local/lib");
+    }
     Ok(())
 }

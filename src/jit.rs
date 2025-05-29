@@ -36,7 +36,26 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
         };
         jit_b.symbol(symbol_name, symbol.cast());
     }
-
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::Foundation::HMODULE;
+        use windows_sys::Win32::System::LibraryLoader;
+        let handle = unsafe {
+            std::os::windows::io::OwnedHandle::from_raw_handle(LibraryLoader::GetModuleHandleA(
+                "libhl.dll".as_ptr(),
+            ))
+        };
+        jit_b.symbol_lookup_fn(Box::new(move |name| {
+            let c_str = std::ffi::CString::new(name).unwrap();
+            let c_str_ptr = c_str.as_ptr();
+            unsafe {
+                LibraryLoader::GetProcAddress(handle.as_raw_handle(), c_str_ptr.cast())
+                    .map(|val| val as *const u8)
+            }
+        }));
+    }
     let mut jit_m = JITModule::new(jit_b);
     let mut jit_m = crate::unwind::UnwindModule::new(jit_m, false);
     let mut ctx = CodegenCtx::new(&mut jit_m);

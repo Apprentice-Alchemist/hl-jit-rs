@@ -2,9 +2,9 @@ mod sys {
     #![expect(non_upper_case_globals)]
     #![expect(non_camel_case_types)]
     #![expect(non_snake_case)]
-    #![expect(improper_ctypes, reason = "triggered by bindgen generated u128")]
-    #![expect(unsafe_op_in_unsafe_fn)]
-    #![expect(unnecessary_transmutes)]
+    #![allow(improper_ctypes, reason = "triggered by bindgen generated u128")]
+    #![allow(unsafe_op_in_unsafe_fn)]
+    #![allow(unnecessary_transmutes)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
     impl varray {
@@ -157,6 +157,12 @@ pub struct Type<'a>(sys::hl_type, PhantomData<&'a sys::hl_type>);
 
 impl Type<'_> {
     pub fn void() -> &'static Type<'static> {
+        // TODO: figure out why hlt_void from mod sys causes linker errors
+        #[cfg(windows)]
+        #[link(name = "libhl")]
+        unsafe extern "C" {
+            unsafe static mut hlt_void: hl_type;
+        }
         // Safety: Type has #[repr(transparent)] so &Type and *const hl_type have compatible layout
         unsafe { core::mem::transmute(&raw const hlt_void) }
     }

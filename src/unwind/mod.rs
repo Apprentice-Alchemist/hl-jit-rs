@@ -56,7 +56,12 @@ impl UnwindContext {
         }
     }
 
-    pub fn add_unwind_info(&mut self, func_id: FuncId, unwind_info: UnwindInfo, isa: &dyn TargetIsa) {
+    pub fn add_unwind_info(
+        &mut self,
+        func_id: FuncId,
+        unwind_info: UnwindInfo,
+        isa: &dyn TargetIsa,
+    ) {
         if isa.triple().operating_system.is_like_darwin() {
             // The object crate doesn't currently support DW_GNU_EH_PE_absptr, which macOS
             // requires for unwinding tables. In addition on arm64 it currently doesn't
@@ -105,7 +110,7 @@ impl UnwindContext {
                     unwind_info.to_fde(address_for_func(func_id)),
                 );
             }
-            UnwindInfo::WindowsX64(_) | UnwindInfo::WindowsArm64(_) => {
+            UnwindInfo::WindowsX64(_) => {
                 // Windows does not have debug info for its unwind info.
             }
             unwind_info => unimplemented!("{:?}", unwind_info),
@@ -170,7 +175,7 @@ impl UnwindContext {
                 current = current.add(len + 4);
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         unsafe {
             // On other platforms, `__register_frame` will walk the FDEs until an entry of length 0
             __register_frame(eh_frame.as_ptr());

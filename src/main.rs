@@ -2,7 +2,7 @@
 use clap::{CommandFactory, Parser};
 use hl_sys::{
     hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32,
-    hl_type_kind_HF64, hl_type_kind_HFUN, hlt_bytes, vclosure, vdynamic, vdynamic__bindgen_ty_1,
+    hl_type_kind_HF64, hl_type_kind_HFUN, vclosure, vdynamic, vdynamic__bindgen_ty_1,
 };
 use std::{
     error::Error,
@@ -112,19 +112,19 @@ static NULL_ACCESS_BYTES: &[u8] = b"N\0u\0l\0l\0 \0A\0c\0c\0e\0s\0s\0\0\0";
 // "SIGILL" in UTF-16
 static SIGILL_BYTES: &[u8] = b"S\0I\0G\0I\0L\0L\0\0\0";
 
-static mut NULL_ACCESS_EXC: vdynamic = vdynamic {
-    t: &raw mut hlt_bytes,
-    v: vdynamic__bindgen_ty_1 {
-        bytes: NULL_ACCESS_BYTES.as_ptr().cast_mut(),
-    },
-};
+// static mut NULL_ACCESS_EXC: vdynamic = vdynamic {
+//     t: &raw mut hlt_bytes,
+//     v: vdynamic__bindgen_ty_1 {
+//         bytes: NULL_ACCESS_BYTES.as_ptr().cast_mut(),
+//     },
+// };
 
-static mut SIGILL_EXC: vdynamic = vdynamic {
-    t: &raw mut hlt_bytes,
-    v: vdynamic__bindgen_ty_1 {
-        bytes: SIGILL_BYTES.as_ptr().cast_mut(),
-    },
-};
+// static mut SIGILL_EXC: vdynamic = vdynamic {
+//     t: &raw mut hlt_bytes,
+//     v: vdynamic__bindgen_ty_1 {
+//         bytes: SIGILL_BYTES.as_ptr().cast_mut(),
+//     },
+// };
 
 static COLLECT_TIMING: AtomicBool = AtomicBool::new(false);
 

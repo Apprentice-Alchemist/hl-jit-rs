@@ -38,6 +38,9 @@ ar_archive_writer = "0.4.2"
 clap_complete = { version = "4.5.48", features = ["unstable-dynamic"] }
 rayon = "1.10.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = "0.59.0"
+
 [build-dependencies]
 bindgen = "0.71.1"
 cc = "1.2.16"

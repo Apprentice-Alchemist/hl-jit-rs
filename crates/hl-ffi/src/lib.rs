@@ -1,5 +1,3 @@
-mod sysv;
-
 use std::{ffi::c_void, ptr::null_mut};
 
 use hl_sys::{
@@ -7,9 +5,19 @@ use hl_sys::{
     vclosure_wrapper, vdynamic,
 };
 
-use sysv::CALL_REGS_COUNT;
-use sysv::FPU_CALL_REGS;
-use sysv::static_call_impl_naked;
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        mod windows;
+        use windows::CALL_REGS_COUNT;
+        use windows::FPU_CALL_REGS;
+        use windows::static_call_impl;
+    } else {
+        mod sysv;
+        use sysv::CALL_REGS_COUNT;
+        use sysv::FPU_CALL_REGS;
+        use sysv::static_call_impl;
+    }
+}
 
 #[derive(Copy, Clone)]
 pub union CpuValue {
@@ -50,17 +58,26 @@ impl CallInfo {
     }
 
     pub fn push_fpu(&mut self, val: u64) {
-        if self.num_fpu_args < FPU_CALL_REGS {
-            self.fpu_regs[self.num_fpu_args] = val;
-            self.num_fpu_args += 1;
+        if cfg!(windows) {
+            if self.num_cpu_args < CALL_REGS_COUNT {
+                self.fpu_regs[self.num_cpu_args] = val;
+                self.num_cpu_args += 1;
+            } else {
+                self.stack.push(val);
+            }
         } else {
-            self.stack.push(val);
+            if self.num_fpu_args < FPU_CALL_REGS {
+                self.fpu_regs[self.num_fpu_args] = val;
+                self.num_fpu_args += 1;
+            } else {
+                self.stack.push(val);
+            }
         }
     }
 }
 
 #[unsafe(export_name = "hlc_static_call")]
-pub extern "C" fn static_call(
+pub extern "C-unwind" fn static_call(
     fun: *const c_void,
     ft_ptr: *mut hl_sys::hl_type,
     args: *const *const c_void,

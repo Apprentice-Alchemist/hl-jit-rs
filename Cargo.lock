@@ -601,6 +601,7 @@ dependencies = [
  "rayon",
  "target-lexicon",
  "tempfile",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
