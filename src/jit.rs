@@ -8,11 +8,7 @@ use crate::codegen::CodegenCtx;
 
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(
-        &[
-            ("regalloc_algorithm", "backtracking"),
-            ("enable_verifier", "false"),
-            ("opt_level", "speed"),
-        ],
+        &[("enable_verifier", "false"), ("opt_level", "none")],
         cranelift::module::default_libcall_names(),
     )
     .unwrap();
