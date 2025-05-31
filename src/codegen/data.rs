@@ -32,9 +32,8 @@ fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
             }
         };
 
-        let mut layout = layout;
-        for (_i, (_str_idx, type_idx)) in o.fields.iter().enumerate() {
-            let field_layout = match &code[*type_idx] {
+        o.fields.iter().fold(layout, |layout, (_, ty)| {
+            let field_layout = match &code[*ty] {
                 HLType::UInt8 => Layout::new::<u8>(),
                 HLType::UInt16 => Layout::new::<u16>(),
                 HLType::Int32 => Layout::new::<i32>(),
@@ -51,12 +50,10 @@ fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
                     Layout::new::<*mut u8>()
                 }
             };
-            let (new_layout, offset) = layout.extend(field_layout).unwrap();
-            layout = new_layout;
-            offsets.push((offset.try_into().unwrap(), *type_idx));
-        }
-
-        layout
+            let (layout, offset) = layout.extend(field_layout).unwrap();
+            offsets.push((offset.try_into().unwrap(), *ty));
+            layout
+        })
     }
 
     let layout = fill_offsets(code, ty, &mut fields).pad_to_align();
@@ -75,11 +72,10 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
         if let Some(obj) = code[TypeIdx(idx)].type_enum() {
             let mut variants = Vec::new();
             for (_, fields) in &obj.constructs {
-                let mut offsets = Vec::new();
+                let mut offsets = Vec::with_capacity(fields.len());
                 let layout = Layout::new::<*mut u8>();
-                let (mut layout, _) = layout.extend(Layout::new::<c_int>()).unwrap();
-                let mut offset;
-                for ty in fields.iter() {
+                let (layout, _) = layout.extend(Layout::new::<c_int>()).unwrap();
+                fields.iter().fold(layout, |layout, ty| {
                     let field_layout = match &code[*ty] {
                         HLType::UInt8 => Layout::new::<u8>(),
                         HLType::UInt16 => Layout::new::<u16>(),
@@ -90,9 +86,10 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
                         HLType::Boolean => Layout::new::<bool>(),
                         _ => Layout::new::<*mut u8>(),
                     };
-                    (layout, offset) = layout.extend(field_layout).unwrap();
-                    offsets.push(offset.try_into().unwrap())
-                }
+                    let (layout, offset) = layout.extend(field_layout).unwrap();
+                    offsets.push(offset.try_into().unwrap());
+                    layout
+                });
                 variants.push(offsets);
             }
             idxs.enum_layouts
