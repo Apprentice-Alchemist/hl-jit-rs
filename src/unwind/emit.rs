@@ -2,9 +2,8 @@
 // taken from rustc_codegen_cranelift
 
 use cranelift::module::{DataId, FuncId};
-use cranelift::object::ObjectProduct;
 use cranelift::object::object;
-use gimli::write::{Address, AttributeValue, EndianVec, Result, Sections, Writer};
+use gimli::write::{Address, EndianVec, Result, Writer};
 use gimli::{RunTimeEndian, SectionId};
 
 // use super::DebugContext;
@@ -19,7 +18,7 @@ pub(super) fn address_for_func(func_id: FuncId) -> Address {
     }
 }
 
-pub(super) fn address_for_data(data_id: DataId) -> Address {
+pub(super) fn _address_for_data(data_id: DataId) -> Address {
     let symbol = data_id.as_u32();
     assert!(symbol & 1 << 31 == 0);
     Address::Symbol {

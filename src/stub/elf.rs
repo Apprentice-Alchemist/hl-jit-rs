@@ -1,20 +1,17 @@
 //! ELF stub generation
 
-use std::collections::{HashMap, HashSet};
-
-use cranelift::{codegen::ir, prelude::isa::{OwnedTargetIsa, TargetIsa}};
-use hl_code::Code;
+use cranelift::{codegen::ir, prelude::isa::TargetIsa};
 
 /// Create an ELF .so stub file.
 /// It exports all the provided symbols, but is otherwise empty.
 pub fn create_elf_stub(isa: &dyn TargetIsa, name: &str, symbols: &[String]) -> Vec<u8> {
     use cranelift::object::object;
+    use cranelift::object::object::elf;
     use cranelift::object::object::write::elf as write;
-    use cranelift::object::object::{Architecture, Endian, elf};
 
     let soname = match name {
         "std" => "libhl.so".to_string(),
-        name => format!("{name}.hdll")
+        name => format!("{name}.hdll"),
     };
 
     let mut stub_buf = Vec::new();
@@ -69,10 +66,10 @@ pub fn create_elf_stub(isa: &dyn TargetIsa, name: &str, symbols: &[String]) -> V
 
     // First write the ELF header with the arch information.
     let e_machine = match isa.triple().architecture {
-		target_lexicon::Architecture::Aarch64(_) => elf::EM_AARCH64,
-		target_lexicon::Architecture::X86_64 => elf::EM_X86_64,
-		target_lexicon::Architecture::Riscv64(_) => elf::EM_RISCV,
-		target_lexicon::Architecture::S390x => elf::EM_S390,
+        target_lexicon::Architecture::Aarch64(_) => elf::EM_AARCH64,
+        target_lexicon::Architecture::X86_64 => elf::EM_X86_64,
+        target_lexicon::Architecture::Riscv64(_) => elf::EM_RISCV,
+        target_lexicon::Architecture::S390x => elf::EM_S390,
         arch => todo!("unsupported architecture {arch}"),
     };
 

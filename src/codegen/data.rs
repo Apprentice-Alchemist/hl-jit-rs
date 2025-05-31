@@ -3,7 +3,6 @@ use std::{error::Error, ffi::c_int, mem::offset_of};
 use cranelift::{
     codegen::binemit::CodeOffset,
     module::{DataDescription, DataId, FuncId, Init, Linkage, Module, ModuleError},
-    prelude::{AbiParam, Signature},
 };
 
 use crate::code::{
@@ -21,27 +20,20 @@ use std::alloc::Layout;
 fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
     let mut fields = Vec::new();
 
-    fn fill_offsets(
-        code: &Code,
-        ty: TypeIdx,
-        offsets: &mut Vec<(u32, TypeIdx)>,
-    ) -> (usize, Layout) {
+    fn fill_offsets(code: &Code, ty: TypeIdx, offsets: &mut Vec<(u32, TypeIdx)>) -> Layout {
         let o = code[ty].type_obj().unwrap();
-        let (nfields, layout) = if let Some(ty) = o.super_ {
+        let layout = if let Some(ty) = o.super_ {
             fill_offsets(code, ty, offsets)
         } else {
-            (
-                0,
-                if matches!(code[ty], HLType::Object(_)) {
-                    Layout::new::<*mut u8>()
-                } else {
-                    Layout::from_size_align(0, 1).unwrap()
-                },
-            )
+            if matches!(code[ty], HLType::Object(_)) {
+                Layout::new::<*mut u8>()
+            } else {
+                Layout::from_size_align(0, 1).unwrap()
+            }
         };
 
         let mut layout = layout;
-        for (i, (str_idx, type_idx)) in o.fields.iter().enumerate() {
+        for (_i, (_str_idx, type_idx)) in o.fields.iter().enumerate() {
             let field_layout = match &code[*type_idx] {
                 HLType::UInt8 => Layout::new::<u8>(),
                 HLType::UInt16 => Layout::new::<u16>(),
@@ -64,13 +56,11 @@ fn build_obj_layout(code: &Code, ty: TypeIdx) -> ObjLayout {
             offsets.push((offset.try_into().unwrap(), *type_idx));
         }
 
-        (nfields + o.fields.len(), layout)
+        layout
     }
 
-    let (nfields, mut layout) = fill_offsets(code, ty, &mut fields);
-    layout = layout.pad_to_align();
-    let l = ObjLayout { layout, fields };
-    l
+    let layout = fill_offsets(code, ty, &mut fields).pad_to_align();
+    ObjLayout { layout, fields }
 }
 
 pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<(), Box<dyn Error>> {
@@ -78,7 +68,7 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
     for idx in 0..code.types.len() {
         let id = m.declare_data(&format!("type{idx}"), Linkage::Local, true, false)?;
         idxs.types.push(id);
-        if let Some(obj) = code[TypeIdx(idx)].type_obj() {
+        if code[TypeIdx(idx)].type_obj().is_some() {
             let layout = build_obj_layout(code, TypeIdx(idx));
             idxs.obj_layouts.insert(TypeIdx(idx), layout);
         }
@@ -86,10 +76,10 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
             let mut variants = Vec::new();
             for (_, fields) in &obj.constructs {
                 let mut offsets = Vec::new();
-                let mut layout = Layout::new::<*mut u8>();
-                let (mut layout, mut offset) = layout.extend(Layout::new::<c_int>()).unwrap();
-
-                for (pos, ty) in fields.iter().enumerate() {
+                let layout = Layout::new::<*mut u8>();
+                let (mut layout, _) = layout.extend(Layout::new::<c_int>()).unwrap();
+                let mut offset;
+                for ty in fields.iter() {
                     let field_layout = match &code[*ty] {
                         HLType::UInt8 => Layout::new::<u8>(),
                         HLType::UInt16 => Layout::new::<u16>(),
@@ -105,7 +95,8 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
                 }
                 variants.push(offsets);
             }
-            idxs.enum_layouts.insert(TypeIdx(idx), super::EnumLayout { variants });
+            idxs.enum_layouts
+                .insert(TypeIdx(idx), super::EnumLayout { variants });
         }
     }
 
@@ -121,7 +112,7 @@ pub fn declare(m: &mut dyn Module, code: &Code, idxs: &mut Indexes) -> Result<()
             let id = m.declare_data(&format!("bytes{idx}"), Linkage::Local, true, false)?;
             idxs.bytes.push(id);
             data.define(bytes[idx].clone());
-            m.define_data(id, &data);
+            m.define_data(id, &data)?;
             data.clear();
         }
     }
@@ -182,8 +173,8 @@ pub fn define_module_context(m: &mut dyn Module, code: &Code, idxs: &mut Indexes
                 fidx.0 * m.isa().pointer_bytes() as usize,
             );
         }
-        m.define_data(fun_table_id, &fun_table_data);
-        m.define_data(fun_type_id, &fun_type_data);
+        m.define_data(fun_table_id, &fun_table_data).unwrap();
+        m.define_data(fun_type_id, &fun_type_data).unwrap();
     }
     let mut data = DataDescription::new();
     data.define(vec![0u8; size_of::<hl_module_context>()].into_boxed_slice());
@@ -341,7 +332,7 @@ fn build_proto_arr(
         }
         data.define(buf.into_boxed_slice());
     }
-    for (pos, (ustr, findex, pindex)) in fields.iter().enumerate() {
+    for (pos, (ustr, _, _)) in fields.iter().enumerate() {
         write_data(
             m,
             &mut data,
@@ -380,7 +371,7 @@ fn build_type_virtual(
 
 fn build_type_obj(
     m: &mut dyn Module,
-    code: &Code,
+    _code: &Code,
     idxs: &mut Indexes,
     TypeObj {
         name,
@@ -439,7 +430,7 @@ fn build_type_obj(
                 chunk[size_of::<c_int>()..].copy_from_slice(&fidx.to_ne_bytes());
             }
             data.define(buf.into_boxed_slice());
-            m.define_data(bindings_id, &data);
+            m.define_data(bindings_id, &data).unwrap();
             bindings_id
         };
         write_data(m, &mut data, bindings_id, offset_of!(hl_type_obj, bindings));
@@ -646,7 +637,7 @@ pub fn define_globals(m: &mut dyn Module, code: &Code, idxs: &Indexes) {
             for write in writes {
                 write_data(m, &mut constant_data, write.1, write.0);
             }
-            m.define_data(constant_id, &constant_data);
+            m.define_data(constant_id, &constant_data).unwrap();
             write_data(m, &mut data, constant_id, 0);
         }
         m.define_data(*id, &data).unwrap();

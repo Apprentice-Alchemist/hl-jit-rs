@@ -1,29 +1,21 @@
 use std::alloc::Layout;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::c_int;
 use std::{collections::BTreeMap, mem::offset_of};
 
-use cranelift::codegen::ir::{BlockCall, FuncRef, Inst, SourceLoc, UserFuncName, ValueListPool};
+use cranelift::codegen::ir::{FuncRef, SourceLoc, UserFuncName};
+use cranelift::codegen::{ir, ir::StackSlot};
 use cranelift::frontend::Switch;
-use cranelift::module::{DataDescription, DataId, FuncId};
+use cranelift::module::{DataId, FuncId};
 use cranelift::prelude::*;
-use cranelift::{
-    codegen::{ir, ir::StackSlot},
-    module::Module,
-};
-use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::Context;
+use cranelift_codegen::isa::TargetIsa;
 use hl_code::FunIdx;
 
-use crate::code::TypeFun;
-use crate::code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, TypeObj, UStrIdx};
+use crate::code::{Code, HLFunction, HLType, Idx, OpCode, Reg, TypeIdx, UStrIdx};
 use crate::codegen::cranelift_type;
-use hl_sys::{
-    hl_thread_info, hl_trap_ctx, hl_type, true_, varray, vclosure, vdynamic, venum, vvirtual,
-};
+use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, venum, vvirtual};
 
-use super::{CodegenCtx, Indexes};
+use super::Indexes;
 
 fn declare_func_in_func_with_sig(
     func_id: FuncId,
@@ -74,7 +66,13 @@ thread_local! {
     static F_CTX: RefCell<FunctionBuilderContext> = RefCell::new(FunctionBuilderContext::new());
 }
 
-pub fn emit_fun(isa: &dyn TargetIsa, idxs: &Indexes, code: &Code, fun: &HLFunction, ctx: &mut Context) {
+pub fn emit_fun(
+    isa: &dyn TargetIsa,
+    idxs: &Indexes,
+    code: &Code,
+    fun: &HLFunction,
+    ctx: &mut Context,
+) {
     F_CTX.with_borrow_mut(|f_ctx| {
         ctx.clear();
         ctx.func.signature.call_conv = isa.default_call_conv();
@@ -135,7 +133,7 @@ impl<'a> EmitCtx<'a> {
         let mut regs = BTreeMap::new();
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, f_ctx);
-        for (idx, (ty, needs_stack)) in fun.regs.iter().enumerate() {
+        for (idx, (ty, _needs_stack)) in fun.regs.iter().enumerate() {
             if !code[*ty].is_void() {
                 let t = super::cranelift_type(&code[*ty]);
                 regs.insert(
@@ -162,7 +160,7 @@ impl<'a> EmitCtx<'a> {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
         builder.append_block_params_for_function_params(entry_block);
-        for (idx, arg) in function_signature.params.iter().enumerate() {
+        for (idx, _arg) in function_signature.params.iter().enumerate() {
             let value = builder.block_params(entry_block)[idx];
             let (slot, _) = regs[&Reg(idx)];
             match slot {
@@ -241,10 +239,10 @@ impl<'a> EmitCtx<'a> {
     }
 
     pub fn ensure_block(&mut self, pos: usize) -> Block {
-        (*self
+        *self
             .blocks
             .entry(pos)
-            .or_insert_with(|| self.builder.create_block()))
+            .or_insert_with(|| self.builder.create_block())
     }
 
     pub fn reg_type(&self, reg: &Reg) -> &HLType {
@@ -336,9 +334,7 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::String { dst, idx } => {
-                    let gval = 
-                        
-                        declare_data_in_func(self.idxs.ustr[idx.0], true, self.builder.func);
+                    let gval = declare_data_in_func(self.idxs.ustr[idx.0], true, self.builder.func);
                     let val = self.ins().global_value(types::I64, gval);
                     self.store_reg(dst, val);
                 }
@@ -733,14 +729,16 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
                 OpCode::GetGlobal { dst, idx } => {
-                    let global_value = declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
+                    let global_value =
+                        declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
                     let val = self.ins().symbol_value(types::I64, global_value);
                     let ty = self.reg_cl_ty(dst);
                     let val = self.ins().load(ty, MemFlags::new(), val, 0);
                     self.store_reg(dst, val);
                 }
                 OpCode::SetGlobal { idx, val } => {
-                    let global_value = declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
+                    let global_value =
+                        declare_data_in_func(self.idxs.globals[idx], true, self.builder.func);
                     let global_value = self.ins().symbol_value(types::I64, global_value);
                     let val = self.load_reg(val);
                     self.ins().store(MemFlags::new(), val, global_value, 0);
@@ -992,7 +990,7 @@ impl<'a> EmitCtx<'a> {
                     let b = self.next_block();
                     self.switch_to_block(b);
                 }
-                OpCode::Switch { val, cases, end } => {
+                OpCode::Switch { val, cases, end: _ } => {
                     let val_val = self.load_reg(val);
                     let mut switch = Switch::new();
                     for (val, case) in cases.iter().enumerate() {
@@ -1088,7 +1086,7 @@ impl<'a> EmitCtx<'a> {
 
                     self.switch_to_block(next_block);
                 }
-                OpCode::EndTrap { something } => {
+                OpCode::EndTrap { something: _ } => {
                     // #define hl_endtrap(ctx)	hl_get_thread()->trap_current = ctx.prev
                     let tinf = {
                         let f = self.native_fun("hl_get_thread");
@@ -1203,7 +1201,7 @@ impl<'a> EmitCtx<'a> {
                         HLType::Abstract(_) => {
                             // CArray
                             match self.reg_type(val) {
-                                val_ty @ (HLType::Object(rt) | HLType::Struct(rt)) => {
+                                HLType::Object(_) | HLType::Struct(_) => {
                                     let arr_addr = self.load_reg(mem);
                                     let offset = self.load_reg(offset);
                                     let offset = self.ins().uextend(types::I64, offset);
@@ -1416,10 +1414,10 @@ impl<'a> EmitCtx<'a> {
                     self.store_reg(dst, val);
                 }
                 OpCode::Nop => (),
-                OpCode::Prefetch { args } => {
+                OpCode::Prefetch { args: _ } => {
                     self.ins().nop();
                 }
-                OpCode::Asm { args } => panic!("unsupported instruction: OAsm"),
+                OpCode::Asm { args: _ } => panic!("unsupported instruction: OAsm"),
             };
             self.maybe_jump_to_next();
         }
@@ -1633,7 +1631,8 @@ impl<'a> EmitCtx<'a> {
 
     fn hash(&mut self, field_name: &UStrIdx) -> Value {
         let field_name_data_id = self.idxs.ustr[field_name.0];
-        let field_name_global_value = declare_data_in_func(field_name_data_id, true, self.builder.func);
+        let field_name_global_value =
+            declare_data_in_func(field_name_data_id, true, self.builder.func);
         let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
         let hash_ref = self.native_fun("hl_hash");
         let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
@@ -1806,7 +1805,7 @@ impl<'a> EmitCtx<'a> {
                 let f_ref = self.native_fun("hl_same_type");
                 let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
                 let ret = self.inst_results(inst)[0];
-                let mut val = self.ins().icmp_imm(int_cc, ret, 0);
+                let val = self.ins().icmp_imm(int_cc, ret, 0);
                 self.ins()
                     .brif(val, block_else_label, &[], block_then_label, &[]);
                 self.switch_to_block(block_else_label);
@@ -1863,7 +1862,7 @@ impl<'a> EmitCtx<'a> {
                     }
                     _ => panic!(),
                 }
-                let mut val = self.ins().icmp(int_cc, val_a, val_b);
+                let val = self.ins().icmp(int_cc, val_a, val_b);
                 self.ins()
                     .brif(val, block_then_label, &[], block_else_label, &[]);
                 self.switch_to_block(block_else_label);
@@ -2031,7 +2030,7 @@ impl<'a> EmitCtx<'a> {
 
     fn emit_method_call(&mut self, dst: &Reg, fid: Idx, this_arg: Reg, args: &[Reg]) {
         match self.reg_type(&this_arg) {
-            HLType::Object(obj) => {
+            HLType::Object(_) => {
                 let mut vargs: Vec<Value> = Vec::with_capacity(args.len() + 1);
                 vargs.push(self.load_reg(&this_arg));
                 vargs.extend(args.iter().map(|r| self.load_reg(r)));

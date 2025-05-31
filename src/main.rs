@@ -1,16 +1,9 @@
-#![allow(unused, dead_code)]
 use clap::{CommandFactory, Parser};
-use hl_sys::{
-    hl_get_thread, hl_type, hl_type__bindgen_ty_1, hl_type_fun, hl_type_kind_HF32,
-    hl_type_kind_HF64, hl_type_kind_HFUN, vclosure, vdynamic, vdynamic__bindgen_ty_1,
-};
 use std::{
     error::Error,
     ffi::{CStr, CString, c_int, c_void},
     io::Write,
-    path::{Path, PathBuf},
-    process::abort,
-    ptr::{null, null_mut},
+    path::PathBuf,
     str::FromStr,
     sync::atomic::AtomicBool,
     time::Instant,
@@ -82,7 +75,7 @@ extern "C" fn resolve_symbol(addr: *mut c_void, out: *mut u16, out_size: *mut c_
                 pos += 1;
             }
             unsafe {
-                unsafe { out.add(pos).write(0) };
+                out.add(pos).write(0);
                 *out_size = pos as c_int;
             }
         }
@@ -108,9 +101,9 @@ extern "C" fn capture_stack(stack: *mut *mut c_void, size: c_int) -> c_int {
     pos
 }
 // "Null Access" in UTF-16
-static NULL_ACCESS_BYTES: &[u8] = b"N\0u\0l\0l\0 \0A\0c\0c\0e\0s\0s\0\0\0";
+// static NULL_ACCESS_BYTES: &[u8] = b"N\0u\0l\0l\0 \0A\0c\0c\0e\0s\0s\0\0\0";
 // "SIGILL" in UTF-16
-static SIGILL_BYTES: &[u8] = b"S\0I\0G\0I\0L\0L\0\0\0";
+// static SIGILL_BYTES: &[u8] = b"S\0I\0G\0I\0L\0L\0\0\0";
 
 // static mut NULL_ACCESS_EXC: vdynamic = vdynamic {
 //     t: &raw mut hlt_bytes,
@@ -141,7 +134,7 @@ fn time<T>(stage: &'static str, f: impl FnOnce() -> T) -> T {
 
 fn main() -> Result<(), Box<dyn Error>> {
     clap_complete::env::CompleteEnv::with_factory(Args::command).complete();
-    let mut args = Args::parse();
+    let args = Args::parse();
     COLLECT_TIMING.store(args.timings, std::sync::atomic::Ordering::Relaxed);
 
     if let Some(Compile::Compile {
@@ -155,9 +148,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (product, isa) = time("compiling", || {
             crate::object::compile_module(&code, file.to_string_lossy().as_ref(), target.clone())
         });
-        let start = Instant::now();
 
-        if (!link) {
+        if !link {
             time("write_object", move || {
                 let bytes = product.emit()?;
                 let out_file = output.unwrap_or_else(|| file.with_extension("o"));
@@ -174,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             })?;
 
             let stub_paths: Vec<TempPath> = time("create_stubs", || {
-                stub::create_stubs(&code, isa.as_ref(), |name, bytes| {
+                stub::create_stubs(&code, isa.as_ref(), |_, bytes| {
                     let mut file = tempfile::NamedTempFile::new().unwrap();
                     file.as_file_mut().write_all(&bytes).unwrap();
                     file.into_temp_path()
@@ -229,7 +221,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let code = time("parsing", || hl_code::Code::from_file(&file).unwrap());
         let (m, entrypoint) = time("jit", move || crate::jit::compile_module(code));
         if !args.run.no_run {
-            let mut args: Vec<&mut CStr> = args
+            let args: Vec<&mut CStr> = args
                 .run
                 .args
                 .iter()

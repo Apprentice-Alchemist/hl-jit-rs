@@ -1,11 +1,7 @@
-use std::{
-    collections::HashMap,
-    fmt::{Display, Write},
-};
+use std::collections::HashMap;
 
 pub use cranelift::jit::{JITBuilder, JITModule};
-use cranelift::module::{FuncId, Linkage, Module};
-use hl_code::NativeFun;
+use cranelift::module::FuncId;
 use libloading::Library;
 
 use crate::codegen::CodegenCtx;
@@ -26,7 +22,7 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
         let symbol_name = native.symbol_name();
         let symbol = unsafe {
             libs.entry(dll_name)
-                .or_insert_with_key(|key| unsafe {
+                .or_insert_with_key(|key| {
                     Box::leak(Box::new(libloading::Library::new(key).unwrap()))
                 })
                 .get::<*mut u8>(symbol_name.as_bytes())
@@ -56,7 +52,7 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
             }
         }));
     }
-    let mut jit_m = JITModule::new(jit_b);
+    let jit_m = JITModule::new(jit_b);
     let mut jit_m = crate::unwind::UnwindModule::new(jit_m, false);
     let mut ctx = CodegenCtx::new(&mut jit_m);
     let entrypoint = ctx.compile(&code, false);

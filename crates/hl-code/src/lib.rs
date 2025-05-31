@@ -189,7 +189,7 @@ pub struct HLFunction {
     pub idx: FunIdx,
     pub regs: Vec<(TypeIdx, bool)>,
     pub opcodes: Vec<OpCode>,
-    pub static_closures: Vec<FunIdx>
+    pub static_closures: Vec<FunIdx>,
 }
 
 impl Index<Reg> for HLFunction {

@@ -4,7 +4,7 @@ mod windows;
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift::prelude::isa::{OwnedTargetIsa, TargetIsa};
+use cranelift::prelude::isa::TargetIsa;
 use hl_code::Code;
 
 use crate::codegen::LIBHL_NATIVE_CALLS;

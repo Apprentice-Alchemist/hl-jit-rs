@@ -1,11 +1,11 @@
 use std::str::FromStr;
 
 use cranelift::{
-    module::{FuncId, default_libcall_names},
+    module::default_libcall_names,
     object::{ObjectBuilder, ObjectModule, ObjectProduct},
     prelude::{
         Configurable,
-        isa::{OwnedTargetIsa, lookup},
+        isa::OwnedTargetIsa,
         settings::{self, Flags},
     },
 };
@@ -30,9 +30,9 @@ pub fn compile_module(
         Triple::host()
     };
     let mut builder = settings::builder();
-    builder.set("is_pic", "true");
-    builder.set("regalloc_algorithm", "backtracking");
-    builder.set("opt_level", "speed");
+    builder.set("is_pic", "true").unwrap();
+    builder.set("regalloc_algorithm", "backtracking").unwrap();
+    builder.set("opt_level", "speed").unwrap();
     let flags = Flags::new(builder);
     let isa_builder = cranelift::codegen::isa::lookup(triple).unwrap();
     let isa = isa_builder.finish(flags).unwrap();
@@ -40,6 +40,6 @@ pub fn compile_module(
     let mut module = UnwindModule::new(ObjectModule::new(mod_builder), true);
 
     let mut ctx = CodegenCtx::new(&mut module);
-    let entrypoint = ctx.compile(code, true);
+    ctx.compile(code, true);
     (module.finish(), isa)
 }

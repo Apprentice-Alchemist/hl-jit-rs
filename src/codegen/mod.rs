@@ -1,23 +1,20 @@
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::error::Error;
-use std::mem::offset_of;
 use std::alloc::Layout;
+use std::collections::BTreeMap;
+use std::mem::offset_of;
 
 use cranelift::codegen::Context;
 use cranelift::codegen::ir;
-use cranelift::module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
+use cranelift::module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift::prelude::*;
-use hl_code::NativeFun;
 use hl_sys::hl_thread_info;
 use hl_sys::hl_trap_ctx;
 use hl_sys::vclosure;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 
-use crate::code::{Code, FunIdx, GlobalIdx, HLType, StrIdx, TypeFun, TypeIdx, UStrIdx};
+use crate::code::{Code, FunIdx, GlobalIdx, HLType, TypeFun, TypeIdx, UStrIdx};
 use crate::unwind::UnwindModule;
-use hl_sys::{hl_module_context, hl_type, hl_type_fun, hl_type_kind};
+use hl_sys::hl_module_context;
 
 mod data;
 mod emit;
@@ -205,19 +202,16 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
             self.idxs.fn_map.insert(fun.idx, (id, signature));
             self.idxs.fn_type_map.insert(fun.idx, fun.ty);
         }
-        for native @ NativeFun {
-            lib, name, ty, fun, ..
-        } in code.natives()
-        {
+        for native in code.natives() {
             let symbol_name = native.symbol_name();
             let mut signature = self.m.make_signature();
-            fill_signature_ty(&code, &mut signature, ty);
+            fill_signature_ty(&code, &mut signature, native.ty);
             let id = self
                 .m
                 .declare_function(&symbol_name, Linkage::Import, &signature)
                 .unwrap();
-            self.idxs.fn_map.insert(fun, (id, signature));
-            self.idxs.fn_type_map.insert(fun, ty);
+            self.idxs.fn_map.insert(native.fun, (id, signature));
+            self.idxs.fn_type_map.insert(native.fun, native.ty);
         }
         for fun in code.functions.iter() {
             for fid in fun.static_closures.iter() {
@@ -243,32 +237,39 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
             }
         }
         let isa = self.m.isa();
-        let fns = code.functions.par_iter().map(|fun| {
-            let mut ctx = Context::new();
-                    emit::emit_fun(isa, &self.idxs, &code, fun, &mut ctx);
-                    let res = ctx.compile(isa, &mut Default::default()).unwrap();
-                    let alignment = res.buffer.alignment as u64;
-                    let id = self.idxs.fn_map[&fun.idx].0;
-                    let compiled_code = ctx.take_compiled_code().unwrap();
-                    let unwind_info = compiled_code.create_unwind_info(isa).unwrap();
-                    let buffer = &compiled_code.buffer;
-                    let relocs = buffer
-                        .relocs()
-                        .iter()
-                        .map(|reloc| {
-                            cranelift::module::ModuleReloc::from_mach_reloc(
-                                &reloc, &ctx.func, id,
-                            )
-                        })
-                        .collect::<Vec<_>>();
+        let fns = code
+            .functions
+            .par_iter()
+            .map(|fun| {
+                let mut ctx = Context::new();
+                emit::emit_fun(isa, &self.idxs, &code, fun, &mut ctx);
+                ctx.compile(isa, &mut Default::default()).unwrap();
+                let id = self.idxs.fn_map[&fun.idx].0;
+                let compiled_code = ctx.take_compiled_code().unwrap();
+                let unwind_info = compiled_code.create_unwind_info(isa).unwrap();
+                let buffer = &compiled_code.buffer;
+                let relocs = buffer
+                    .relocs()
+                    .iter()
+                    .map(|reloc| {
+                        cranelift::module::ModuleReloc::from_mach_reloc(&reloc, &ctx.func, id)
+                    })
+                    .collect::<Vec<_>>();
                 (id, compiled_code, relocs, unwind_info)
-        }).collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         for (func_id, compiled_code, relocs, unwind_info) in fns {
             if let Some(unwind_info) = unwind_info {
-                let isa = self.m.isa();
                 self.m.add_unwind_info(func_id, unwind_info);
             }
-            self.m.define_function_bytes(func_id, compiled_code.buffer.alignment as u64, compiled_code.buffer.data(), &relocs).unwrap();
+            self.m
+                .define_function_bytes(
+                    func_id,
+                    compiled_code.buffer.alignment as u64,
+                    compiled_code.buffer.data(),
+                    &relocs,
+                )
+                .unwrap();
         }
         data::define_module_context(&mut self.m, &code, &mut self.idxs);
         let entrypoint_id = self.emit_entrypoint(&code);
@@ -279,11 +280,11 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
     }
 
     fn native_fun_ref(&mut self, name: &str, func: &mut ir::Function) -> ir::FuncRef {
-        let (id, signature) = &self.idxs.native_calls[name];
+        let (id, _) = &self.idxs.native_calls[name];
         self.m.declare_func_in_func(*id, func)
     }
 
-    fn emit_main(&mut self, code: &Code, entrypoint_id: FuncId) -> FuncId {
+    fn emit_main(&mut self, _code: &Code, entrypoint_id: FuncId) -> FuncId {
         let mut sig = self.m.make_signature();
         sig.params.push(AbiParam::new(types::I32));
         sig.params.push(AbiParam::new(types::I64));

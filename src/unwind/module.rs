@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
+use cranelift::codegen::Context;
 use cranelift::codegen::control::ControlPlane;
-use cranelift::codegen::ir::{Function, Signature};
+use cranelift::codegen::ir::Signature;
 use cranelift::codegen::isa::{TargetFrontendConfig, TargetIsa};
-use cranelift::codegen::{Context, FinalizedMachReloc};
 use cranelift::module::{
     DataDescription, DataId, FuncId, FuncOrDataId, Linkage, Module, ModuleDeclarations,
     ModuleReloc, ModuleResult,
