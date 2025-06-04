@@ -1,0 +1,8 @@
+experimental = ["setup-scripts"]
+
+[scripts.setup.build-hello-world]
+command = 'haxe --cwd tests -m HelloWorld -hl hello.hl'
+
+[[profile.default.scripts]]
+filter = 'test(hello_world)'
+setup = 'build-hello-world'

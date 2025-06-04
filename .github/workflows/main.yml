@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Update Rust
+      run: rustup update stable
+    - name: Install Hashlink (Windows)
+      if: startsWith(matrix.os, 'windows')
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release download -R HaxeFoundation/hashlink latest -p '*win64*' --output $env:RUNNER_TEMP/hl-win64.zip
+        Expand-Archive -Path $env:RUNNER_TEMP/hl-win64.zip -DestinationPath $env:RUNNER_TEMP
+        $HASHLINK = Get-ChildItem $env:RUNNER_TEMP/hashlink-*-*
+        echo "$HASHLINK" >> $env:GITHUB_PATH
+        echo "HASHLINK=$HASHLINK" >> $env:GITHUB_ENV
+        ls "$HASHLINK"
+        ls "$HASHLINK/include"
+    - name: Install Hashlink (macOS)
+      if: startsWith(matrix.os, 'macos')
+      run: brew install hashlink
+    - name: Install Hashlink (Linux)
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install --no-install-recommends -y \
+              libmbedtls-dev \
+              libopenal-dev \
+              libpng-dev \
+              libsdl2-dev \
+              libturbojpeg-dev \
+              libuv1-dev \
+              libvorbis-dev \
+              libsqlite3-dev \
+              libglu1-mesa-dev
+        git clone -b build-linux-arm64 https://github.com/Apprentice-Alchemist/hashlink
+        cd hashlink
+        make -j$(nproc)
+        sudo make install
+    - uses: Apprentice-Alchemist/setup-haxe@9623def59695242d7d82382bc44bee999be065bc
+      with:
+        haxe-version: latest
+    - name: Build hello.hl
+      run: haxe -m HelloWorld -hl tests/hello.hl
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
