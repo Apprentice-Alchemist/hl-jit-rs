@@ -17,10 +17,10 @@ use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, v
 
 use super::Indexes;
 
-fn declare_func_in_func_with_sig(
+pub(super) fn declare_func_in_func_with_sig(
     func_id: FuncId,
     signature: &Signature,
-    colocated: bool,
+    _colocated: bool,
     func: &mut ir::Function,
 ) -> ir::FuncRef {
     let signature = func.import_signature(signature.clone());
@@ -31,11 +31,15 @@ fn declare_func_in_func_with_sig(
     func.import_function(ir::ExtFuncData {
         name: ir::ExternalName::user(user_name_ref),
         signature,
-        colocated,
+        colocated: false,
     })
 }
 
-fn declare_data_in_func(data: DataId, colocated: bool, func: &mut ir::Function) -> ir::GlobalValue {
+pub(super) fn declare_data_in_func(
+    data: DataId,
+    _colocated: bool,
+    func: &mut ir::Function,
+) -> ir::GlobalValue {
     let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
         namespace: 1,
         index: data.as_u32(),
@@ -43,7 +47,7 @@ fn declare_data_in_func(data: DataId, colocated: bool, func: &mut ir::Function) 
     func.create_global_value(ir::GlobalValueData::Symbol {
         name: ir::ExternalName::user(user_name_ref),
         offset: ir::immediates::Imm64::new(0),
-        colocated,
+        colocated: false,
         tls: false,
     })
 }

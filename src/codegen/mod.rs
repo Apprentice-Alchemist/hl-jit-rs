@@ -280,8 +280,8 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
     }
 
     fn native_fun_ref(&mut self, name: &str, func: &mut ir::Function) -> ir::FuncRef {
-        let (id, _) = &self.idxs.native_calls[name];
-        self.m.declare_func_in_func(*id, func)
+        let (id, signature) = &self.idxs.native_calls[name];
+        emit::declare_func_in_func_with_sig(*id, signature, false, func)
     }
 
     fn emit_main(&mut self, _code: &Code, entrypoint_id: FuncId) -> FuncId {
@@ -397,7 +397,16 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
             bcx.seal_block(call_block);
             bcx.switch_to_block(call_block);
 
-            let entrypoint_ref = self.m.declare_func_in_func(entrypoint_id, bcx.func);
+            let entrypoint_ref = emit::declare_func_in_func_with_sig(
+                entrypoint_id,
+                &self
+                    .m
+                    .declarations()
+                    .get_function_decl(entrypoint_id)
+                    .signature,
+                false,
+                bcx.func,
+            );
             bcx.ins().call(entrypoint_ref, &[]);
 
             let zero = bcx.ins().iconst(types::I32, 0);
@@ -497,9 +506,17 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
             }
         }
 
-        let f_ref = self
-            .m
-            .declare_func_in_func(self.idxs.fn_map[&code.entrypoint].0, &mut bcx.func);
+        let entrypoint_id = self.idxs.fn_map[&code.entrypoint].0;
+        let f_ref = emit::declare_func_in_func_with_sig(
+            entrypoint_id,
+            &self
+                .m
+                .declarations()
+                .get_function_decl(entrypoint_id)
+                .signature,
+            false,
+            bcx.func,
+        );
         bcx.ins().call(f_ref, &[]);
         bcx.ins().return_(&[]);
         bcx.finalize();
