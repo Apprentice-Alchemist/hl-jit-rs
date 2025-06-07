@@ -54,45 +54,46 @@ pub(crate) unsafe extern "C-unwind" fn static_call_impl<T>(
     );
 }
 
-core::arch::global_asm!(
-    ".global wrapper_call_impl",
-    "wrapper_call_impl:",
-    "	.seh_proc frame",
-    "   push rbp",
-    "   .seh_pushreg rbp",
-    "   mov rbp, rsp",
-    "   .seh_setframe rbp, 0",
-    "   .seh_endprologue",
-    "   sub rsp, 32",
-    "   movsd [rsp + 24], xmm3",
-    "   movsd [rsp + 16], xmm2",
-    "   movsd [rsp + 8], xmm1",
-    "   movsd [rsp + 0], xmm0",
-    "   push r9",
-    "   push r8",
-    "   push rdx",
-    "   push rcx",
-    "   mov rdx, rsp",
-    "   lea r8, [rbp + 48]",
-    "   sub rsp, 16",
-    "   mov r9, rsp",
-    "   sub rsp, 32",
-    "   mov r10, [rcx]", // ->t
-    "   mov r10, [r10 + 8]", // ->fun
-    "   mov r10, [r10 + 8]", // ->ret
-    "   mov r10d, [r10]", // ->kind
-    "   cmp r10d, 5",
-    "   jz 0f",
-    "   cmp r10d, 6",
-    "   jz 0f",
-    "   call {wrapper_inner}",
-    "   jmp 1f",
-    "   0: call {wrapper_inner}",
-    "   movsd xmm0, [rax]",
-    "   1:",
-    "   mov rsp, rbp",
-    "   pop rbp",
-    "   ret",
-    "   .seh_endproc",
-    wrapper_inner = sym crate::wrapper_inner,
-);
+#[unsafe(naked)]
+pub(crate) unsafe extern "C" fn wrapper_call_impl() {
+    core::arch::naked_asm!(
+        "	.seh_proc frame",
+        "   push rbp",
+        "   .seh_pushreg rbp",
+        "   mov rbp, rsp",
+        "   .seh_setframe rbp, 0",
+        "   .seh_endprologue",
+        "   sub rsp, 32",
+        "   movsd [rsp + 24], xmm3",
+        "   movsd [rsp + 16], xmm2",
+        "   movsd [rsp + 8], xmm1",
+        "   movsd [rsp + 0], xmm0",
+        "   push r9",
+        "   push r8",
+        "   push rdx",
+        "   push rcx",
+        "   mov rdx, rsp",
+        "   lea r8, [rbp + 48]",
+        "   sub rsp, 16",
+        "   mov r9, rsp",
+        "   sub rsp, 32",
+        "   mov r10, [rcx]", // ->t
+        "   mov r10, [r10 + 8]", // ->fun
+        "   mov r10, [r10 + 8]", // ->ret
+        "   mov r10d, [r10]", // ->kind
+        "   cmp r10d, 5",
+        "   jz 2f",
+        "   cmp r10d, 6",
+        "   jz 2f",
+        "   call {wrapper_inner}",
+        "   jmp 3f",
+        "   2: call {wrapper_inner}",
+        "   movsd xmm0, [rax]",
+        "   3:",
+        "   mov rsp, rbp",
+        "   pop rbp",
+        "   ret",
+        "   .seh_endproc",
+        wrapper_inner = sym crate::wrapper_inner,
+    );
+}

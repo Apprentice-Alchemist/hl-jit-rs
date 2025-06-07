@@ -11,11 +11,13 @@ cfg_if::cfg_if! {
         use windows::CALL_REGS_COUNT;
         use windows::FPU_CALL_REGS;
         use windows::static_call_impl;
+        use windows::wrapper_call_impl;
     } else {
         mod sysv;
         use sysv::CALL_REGS_COUNT;
         use sysv::FPU_CALL_REGS;
         use sysv::static_call_impl;
+        use sysv::wrapper_call_impl;
     }
 }
 
@@ -205,9 +207,6 @@ pub extern "C-unwind" fn static_call(
 
 #[unsafe(export_name = "hlc_get_wrapper")]
 pub extern "C" fn get_wrapper(_t: *mut hl_type) -> *const c_void {
-    unsafe extern "C" {
-        unsafe fn wrapper_call_impl();
-    }
     wrapper_call_impl as *const c_void
 }
 
