@@ -1,10 +1,9 @@
 use clap::{CommandFactory, Parser};
 use std::{
     error::Error,
-    ffi::{CStr, CString, c_int, c_void},
+    ffi::{OsString, c_int, c_void},
     io::Write,
     path::PathBuf,
-    str::FromStr,
     sync::atomic::AtomicBool,
     time::Instant,
 };
@@ -221,12 +220,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let code = time("parsing", || hl_code::Code::from_file(&file).unwrap());
         let (m, entrypoint) = time("jit", move || crate::jit::compile_module(code));
         if !args.run.no_run {
-            let args: Vec<&mut CStr> = args
-                .run
-                .args
-                .iter()
-                .map(|s| Box::leak(CString::from_str(&s).unwrap().into_boxed_c_str()))
-                .collect();
+            let args: Vec<_> = args.run.args.iter().map(|s| OsString::from(s)).collect();
             let f = m
                 .get_finalized_function(entrypoint)
                 .cast::<c_void>()
@@ -240,7 +234,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(), ()> {
+fn run_jit(args: Vec<OsString>, file: String, fun: *mut c_void) -> Result<(), ()> {
     #[cfg(not(feature = "hl-ffi"))]
     unsafe extern "C" {
         unsafe fn hlc_static_call(
@@ -251,26 +245,13 @@ fn run_jit(mut args: Vec<&mut CStr>, file: String, fun: *mut c_void) -> Result<(
         ) -> *mut c_void;
         unsafe fn hlc_get_wrapper(ty: *mut hl_type) -> *mut c_void;
     }
-    let global = hl_sys::GLOBAL.init();
-    unsafe {
-        #[cfg(feature = "hl-ffi")]
-        hl_sys::hl_setup_callbacks(
-            hl_ffi::static_call as *mut c_void,
-            hl_ffi::get_wrapper as *mut c_void,
-        );
-        #[cfg(not(feature = "hl-ffi"))]
-        hl_sys::hl_setup_callbacks(
-            hlc_static_call as *mut c_void,
-            hlc_get_wrapper as *mut c_void,
-        );
-        hl_sys::hl_setup_exception(resolve_symbol as *mut c_void, capture_stack as *mut c_void);
-        let c_file = CString::from_str(&file).unwrap();
-        hl_sys::hl_sys_init(
-            args.as_mut_ptr().cast(),
-            args.len() as i32,
-            c_file.as_ptr().cast_mut().cast(),
-        );
-    }
+    let global = hl_sys::GLOBAL
+        .builder()
+        .set_callbacks(hl_ffi::static_call, hl_ffi::get_wrapper)
+        .set_exception_callbacks(resolve_symbol, capture_stack)
+        .set_args(args)
+        .set_file(&file)
+        .init();
     global.with_current_thread(|thread| {
         let ty = hl_sys::Type::fun(&[], hl_sys::Type::void());
         let c = hl_sys::VClosure::new(&ty, fun.cast_const());

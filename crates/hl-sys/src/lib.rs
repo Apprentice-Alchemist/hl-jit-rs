@@ -40,7 +40,10 @@ mod sys {
     }
 }
 
-use std::marker::PhantomData;
+use std::{
+    ffi::{OsString, c_int, c_void},
+    marker::PhantomData,
+};
 
 pub use sys::*;
 
@@ -118,9 +121,116 @@ impl Drop for GlobalHandle<'_> {
 }
 
 impl Global {
-    pub fn init<'a>(&'a self) -> GlobalHandle<'a> {
+    pub fn builder<'a>(&'a self) -> GlobalBuilder<'a> {
+        GlobalBuilder {
+            callbacks: None,
+            exception_callbacks: None,
+            args: Vec::new(),
+            file: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+type StaticCallCallback = extern "C-unwind" fn(
+    fun: *const c_void,
+    ft_ptr: *mut sys::hl_type,
+    args: *const *const c_void,
+    out: *mut sys::vdynamic,
+) -> *mut c_void;
+type GetWrapperCallback = extern "C" fn(t: *mut hl_type) -> *const c_void;
+
+type ResolveSymbolCallback =
+    extern "C" fn(addr: *mut c_void, out: *mut u16, out_size: *mut c_int) -> *mut u16;
+type CaptureStackCallback = extern "C" fn(stack: *mut *mut c_void, size: c_int) -> c_int;
+
+pub struct GlobalBuilder<'a> {
+    callbacks: Option<(StaticCallCallback, GetWrapperCallback)>,
+    exception_callbacks: Option<(ResolveSymbolCallback, CaptureStackCallback)>,
+    args: Vec<OsString>,
+    file: Option<OsString>,
+    _phantom: PhantomData<&'a Global>,
+}
+#[cfg(windows)]
+type PStr = *const u16;
+#[cfg(not(windows))]
+type PStr = *const u8;
+
+fn os_string_into_pstr(s: OsString) -> PStr {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().collect::<Vec<_>>().leak().as_ptr()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        s.into_vec().leak().as_mut_ptr()
+    }
+}
+
+impl<'a> GlobalBuilder<'a> {
+    pub fn set_callbacks(
+        mut self,
+        static_call: StaticCallCallback,
+        get_wrapper: GetWrapperCallback,
+    ) -> Self {
+        self.callbacks = Some((static_call, get_wrapper));
+        self
+    }
+
+    pub fn set_exception_callbacks(
+        mut self,
+        resolve_symbol: ResolveSymbolCallback,
+        capture_stack: CaptureStackCallback,
+    ) -> Self {
+        self.exception_callbacks = Some((resolve_symbol, capture_stack));
+        self
+    }
+
+    pub fn set_args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
+        self.args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+        self
+    }
+
+    pub fn set_file(mut self, file: &'a str) -> Self {
+        self.file = Some(file.into());
+        self
+    }
+
+    pub fn init(self) -> GlobalHandle<'a> {
         unsafe {
             sys::hl_global_init();
+        }
+        if let Some((static_call, get_wrapper)) = self.callbacks {
+            unsafe {
+                sys::hl_setup_callbacks(static_call as *mut c_void, get_wrapper as *mut c_void);
+            }
+        }
+        if let Some((resolve_symbol, capture_stack)) = self.exception_callbacks {
+            unsafe {
+                sys::hl_setup_exception(
+                    resolve_symbol as *mut c_void,
+                    capture_stack as *mut c_void,
+                );
+            }
+        }
+
+        let c_file = self.file.map(|f| os_string_into_pstr(f));
+        let mut args = self
+            .args
+            .into_iter()
+            .map(|s| os_string_into_pstr(s))
+            .collect::<Vec<PStr>>();
+        unsafe {
+            sys::hl_sys_init(
+                args.as_mut_ptr().cast(),
+                args.len().try_into().unwrap(),
+                c_file
+                    .unwrap_or(core::ptr::null_mut())
+                    .cast::<c_void>()
+                    .cast_mut(),
+            )
         }
         GlobalHandle(PhantomData)
     }
