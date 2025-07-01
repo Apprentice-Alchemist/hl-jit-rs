@@ -1,10 +1,12 @@
 //! Write the debuginfo into an object file.
 // taken from rustc_codegen_cranelift
 
+use cranelift::codegen::gimli::{
+    self, RunTimeEndian, SectionId,
+    write::{Address, EndianVec, Result, Writer},
+};
 use cranelift::module::{DataId, FuncId};
 use cranelift::object::object;
-use gimli::write::{Address, EndianVec, Result, Writer};
-use gimli::{RunTimeEndian, SectionId};
 
 // use super::DebugContext;
 // use super::object::WriteDebugInfo;

@@ -8,7 +8,7 @@ use cranelift::object::ObjectProduct;
 use cranelift::object::object;
 use cranelift::object::object::write::{Relocation, StandardSegment};
 use cranelift::object::object::{RelocationEncoding, RelocationFlags, SectionKind};
-use gimli::SectionId;
+use cranelift::codegen::gimli::SectionId;
 
 // use crate::debuginfo::{DebugReloc, DebugRelocName};
 

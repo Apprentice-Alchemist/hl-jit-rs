@@ -5,6 +5,7 @@ pub(crate) mod emit;
 pub(crate) mod module;
 pub(crate) mod object;
 
+use cranelift_codegen::gimli;
 pub(crate) use module::UnwindModule;
 
 use std::collections::HashMap;
@@ -15,8 +16,8 @@ use cranelift::codegen::isa::TargetIsa;
 use cranelift::codegen::isa::unwind::UnwindInfo;
 use cranelift::module::FuncId;
 use cranelift::object::ObjectProduct;
-use gimli::RunTimeEndian;
-use gimli::write::{CieId, EhFrame, FrameTable, Section};
+use cranelift::codegen::gimli::RunTimeEndian;
+use cranelift::codegen::gimli::write::{CieId, EhFrame, FrameTable, Section};
 
 use emit::address_for_func;
 use object::WriteDebugInfo;
