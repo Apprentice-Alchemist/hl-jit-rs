@@ -18,7 +18,7 @@ mod object;
 mod stub;
 mod unwind;
 
-/// Hashlink JIT/AOT compiler
+/// Hashlink JIT compiler
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None, args_conflicts_with_subcommands = true)]
 struct Args {
@@ -45,6 +45,7 @@ struct Run {
 
 #[derive(clap::Subcommand, Debug)]
 enum Compile {
+    #[command(hide = true)]
     /// Compile to object file
     Compile {
         /// File containing HL bytecode
