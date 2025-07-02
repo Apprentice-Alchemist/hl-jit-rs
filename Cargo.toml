@@ -38,7 +38,7 @@ clap_complete = { version = "4.5.48", features = ["unstable-dynamic"] }
 rayon = "1.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = "0.60.2"
+windows-sys = { version = "0.60.2", features = ["Win32_System_LibraryLoader"] }
 
 [build-dependencies]
 cc = "1.2.16"

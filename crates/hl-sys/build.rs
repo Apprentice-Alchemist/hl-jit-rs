@@ -44,8 +44,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo::rustc-link-lib=libhl");
         println!("cargo::rustc-link-search={v}");
         PathBuf::from(v)
-            .join("include")
-            .join("hl.h")
+            .join("include/hl.h")
+            .canonicalize().unwrap()
             .to_string_lossy()
             .into_owned()
     } else {
@@ -58,14 +58,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo::metadata=RPATH={}", libdir);
         header_path.to_string_lossy().to_string()
     };
-    println!("{header}");
+
     let bindings = bindgen::builder()
         .header(&header)
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .ctypes_prefix("::std::ffi")
-        .allowlist_file(&header)
         .merge_extern_blocks(true)
         .generate()?;
 

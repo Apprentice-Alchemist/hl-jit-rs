@@ -32,7 +32,6 @@ pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     {
         use std::os::windows::io::AsRawHandle;
         use std::os::windows::io::FromRawHandle;
-        use windows_sys::Win32::Foundation::HMODULE;
         use windows_sys::Win32::System::LibraryLoader;
         let handle = unsafe {
             std::os::windows::io::OwnedHandle::from_raw_handle(LibraryLoader::GetModuleHandleA(
