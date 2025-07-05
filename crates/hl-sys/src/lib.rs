@@ -41,7 +41,7 @@ mod sys {
 }
 
 use std::{
-    ffi::{OsString, c_int, c_void},
+    ffi::{c_int, c_void},
     marker::PhantomData,
 };
 
@@ -147,8 +147,8 @@ type CaptureStackCallback = extern "C" fn(stack: *mut *mut c_void, size: c_int) 
 pub struct GlobalBuilder<'a> {
     callbacks: Option<(StaticCallCallback, GetWrapperCallback)>,
     exception_callbacks: Option<(ResolveSymbolCallback, CaptureStackCallback)>,
-    args: Vec<OsString>,
-    file: Option<OsString>,
+    args: Vec<String>,
+    file: Option<String>,
     _phantom: PhantomData<&'a Global>,
 }
 #[cfg(windows)]
@@ -156,16 +156,16 @@ type PStr = *const u16;
 #[cfg(not(windows))]
 type PStr = *const u8;
 
-fn os_string_into_pstr(s: OsString) -> PStr {
+fn string_into_pstr(s: String) -> PStr {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        s.encode_wide().collect::<Vec<_>>().leak().as_ptr()
+        s.encode_utf16().collect::<Vec<_>>().leak().as_ptr()
     }
     #[cfg(not(windows))]
     {
-        use std::os::unix::ffi::OsStringExt;
-        s.into_vec().leak().as_mut_ptr()
+        use std::ffi::CString;
+
+        CString::new(s).unwrap().into_raw().cast()
     }
 }
 
@@ -188,8 +188,8 @@ impl<'a> GlobalBuilder<'a> {
         self
     }
 
-    pub fn set_args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
-        self.args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    pub fn set_args(mut self, args: impl IntoIterator<Item = String>) -> Self {
+        self.args = args.into_iter().collect::<Vec<_>>();
         self
     }
 
@@ -216,12 +216,13 @@ impl<'a> GlobalBuilder<'a> {
             }
         }
 
-        let c_file = self.file.map(|f| os_string_into_pstr(f));
-        let mut args = self
+        let c_file = self.file.map(|f| string_into_pstr(f));
+        let args = self
             .args
             .into_iter()
-            .map(|s| os_string_into_pstr(s))
-            .collect::<Vec<PStr>>();
+            .map(|s| string_into_pstr(s))
+            .collect::<Vec<PStr>>()
+            .leak();
         unsafe {
             sys::hl_sys_init(
                 args.as_mut_ptr().cast(),
@@ -278,7 +279,7 @@ impl Type<'_> {
     }
     pub fn fun<'a>(args: &'a [&'a Type<'a>], ret: &'a Type) -> Type<'a> {
         use core::ptr::null_mut;
-        assert!(args.len() == 0);
+
         let __bindgen_anon_1 = hl_type__bindgen_ty_1 {
             // TODO: get rid of Box::leak
             fun: Box::leak(Box::new(hl_type_fun {

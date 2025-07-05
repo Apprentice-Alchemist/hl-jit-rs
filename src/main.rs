@@ -1,7 +1,7 @@
 use clap::{CommandFactory, Parser};
 use std::{
     error::Error,
-    ffi::{OsString, c_int, c_void},
+    ffi::{c_int, c_void},
     io::Write,
     path::PathBuf,
     sync::atomic::AtomicBool,
@@ -29,7 +29,7 @@ struct Args {
     compile: Option<Compile>,
 
     #[command(flatten)]
-    run: Run,
+    run: Option<Run>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -38,7 +38,7 @@ struct Run {
     #[arg(long)]
     no_run: bool,
     /// Bytecode file to execute
-    file: Option<String>,
+    file: String,
     /// Program arguments
     args: Vec<String>,
 }
@@ -213,15 +213,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(1);
             }
         }
-    } else {
-        let file = args.run.file.unwrap_or_else(|| {
-            Args::command().print_help().unwrap();
-            std::process::exit(0);
-        });
+    } else if let Some(run) = args.run {
+        let file = run.file;
         let code = time("parsing", || hl_code::Code::from_file(&file).unwrap());
         let (m, entrypoint) = time("jit", move || crate::jit::compile_module(code));
-        if !args.run.no_run {
-            let args: Vec<_> = args.run.args.iter().map(|s| OsString::from(s)).collect();
+        if !run.no_run {
+            let args: Vec<_> = run.args;
             let f = m
                 .get_finalized_function(entrypoint)
                 .cast::<c_void>()
@@ -231,11 +228,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(1);
             }
         }
+    } else {
+        Args::command().print_long_help()?;
     }
     Ok(())
 }
 
-fn run_jit(args: Vec<OsString>, file: String, fun: *mut c_void) -> Result<(), ()> {
+fn run_jit(args: Vec<String>, file: String, fun: *mut c_void) -> Result<(), ()> {
     #[cfg(not(feature = "hl-ffi"))]
     unsafe extern "C" {
         unsafe fn hlc_static_call(
