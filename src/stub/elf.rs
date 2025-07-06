@@ -50,10 +50,8 @@ pub fn create_elf_stub(isa: &dyn TargetIsa, name: &str, symbols: &[String]) -> V
     // Reserve the sections.
     // We have the minimal sections for a dynamic SO and .text where we point our dummy symbols to.
     stub.reserve_shstrtab_section_index();
-    let text_section_name = stub.add_section_name(".text".as_bytes());
-    let text_section = stub.reserve_section_index();
     stub.reserve_dynstr_section_index();
-    stub.reserve_dynsym_section_index();
+    let dynsm_idx = stub.reserve_dynsym_section_index();
     stub.reserve_dynamic_section_index();
 
     // These reservations now determine the actual layout order of the object file.
@@ -89,19 +87,6 @@ pub fn create_elf_stub(isa: &dyn TargetIsa, name: &str, symbols: &[String]) -> V
     // Section headers
     stub.write_null_section_header();
     stub.write_shstrtab_section_header();
-    // Create a dummy .text section for our dummy symbols.
-    stub.write_section_header(&write::SectionHeader {
-        name: Some(text_section_name),
-        sh_type: elf::SHT_PROGBITS,
-        sh_flags: 0,
-        sh_addr: 0,
-        sh_offset: 0,
-        sh_size: 0,
-        sh_link: 0,
-        sh_info: 0,
-        sh_addralign: 1,
-        sh_entsize: 0,
-    });
     stub.write_dynstr_section_header(0);
     stub.write_dynsym_section_header(0, 1);
     stub.write_dynamic_section_header(0);
@@ -116,7 +101,7 @@ pub fn create_elf_stub(isa: &dyn TargetIsa, name: &str, symbols: &[String]) -> V
             name: Some(name),
             st_info: (elf::STB_GLOBAL << 4) | elf::STT_FUNC,
             st_other: elf::STV_DEFAULT,
-            section: Some(text_section),
+            section: Some(dynsm_idx),
             st_shndx: 0, // ignored by object in favor of the `section` field
             st_value: 0,
             st_size: 0,
