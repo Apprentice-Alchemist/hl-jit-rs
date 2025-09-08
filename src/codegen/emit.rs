@@ -1422,6 +1422,7 @@ impl<'a> EmitCtx<'a> {
                     self.ins().nop();
                 }
                 OpCode::Asm { args: _ } => panic!("unsupported instruction: OAsm"),
+                OpCode::Catch { .. } => ()
             };
             self.maybe_jump_to_next();
         }

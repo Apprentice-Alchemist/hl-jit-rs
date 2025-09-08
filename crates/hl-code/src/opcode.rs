@@ -502,4 +502,7 @@ pub enum OpCode {
     Asm {
         args: [Idx; 3],
     },
+    Catch {
+        idx: GlobalIdx
+    }
 }
