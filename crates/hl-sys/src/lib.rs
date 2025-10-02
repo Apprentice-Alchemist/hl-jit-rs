@@ -58,7 +58,7 @@ impl UStr {
         UStr { ptr }
     }
 
-    pub fn iter(&self) -> UStringIter {
+    pub fn iter(&'_ self) -> UStringIter<'_> {
         UStringIter::new(self)
     }
 }
@@ -334,7 +334,7 @@ impl<T: Copy> Iterator for VArrayIterator<'_, T> {
 pub struct VDynamic<'a>(&'a vdynamic);
 
 impl VDynamic<'_> {
-    pub fn ty(&self) -> &Type {
+    pub fn ty(&'_ self) -> &'_ Type<'_> {
         unsafe { self.0.t.cast::<Type>().as_ref().unwrap() }
     }
 
@@ -395,7 +395,7 @@ impl<'thread, 'global> ThreadHandle<'thread, 'global> {
         }
     }
 
-    pub fn exception_stack(&self) -> VArray<UStr> {
+    pub fn exception_stack(&'_ self) -> VArray<'_, UStr> {
         unsafe {
             VArray(
                 sys::hl_exception_stack().cast_const().as_ref().unwrap(),
