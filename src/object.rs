@@ -32,6 +32,8 @@ pub fn compile_module(
     let mut builder = settings::builder();
     builder.set("is_pic", "true").unwrap();
     builder.set("opt_level", "speed").unwrap();
+    builder.set("regalloc_algorithm", "backtracking").unwrap();
+
     let flags = Flags::new(builder);
     let isa_builder = cranelift::codegen::isa::lookup(triple).unwrap();
     let isa = isa_builder.finish(flags).unwrap();

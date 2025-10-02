@@ -150,8 +150,7 @@ impl<'a> EmitCtx<'a> {
                                 align_shift: 0,
                             }))
                         } else {
-                            let v = Variable::new(idx);
-                            builder.declare_var(v, t);
+                            let v = builder.declare_var(t);
                             RegStorage::Var(v)
                         },
                         t,
@@ -1422,7 +1421,7 @@ impl<'a> EmitCtx<'a> {
                     self.ins().nop();
                 }
                 OpCode::Asm { args: _ } => panic!("unsupported instruction: OAsm"),
-                OpCode::Catch { .. } => ()
+                OpCode::Catch { .. } => (),
             };
             self.maybe_jump_to_next();
         }
