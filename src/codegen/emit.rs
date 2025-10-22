@@ -17,6 +17,8 @@ use hl_sys::{hl_thread_info, hl_trap_ctx, hl_type, varray, vclosure, vdynamic, v
 
 use super::Indexes;
 
+const MAX_DYN_CALL_ARGS: usize = 9;
+
 pub(super) fn declare_func_in_func_with_sig(
     func_id: FuncId,
     signature: &Signature,
@@ -99,6 +101,9 @@ struct EmitCtx<'a> {
     pos: usize,
     regs: BTreeMap<Reg, (RegStorage, Type)>,
     safe_cast_slot: Option<StackSlot>,
+    trap_depth: usize,
+    trap_ctx_slots: Vec<StackSlot>,
+    dyn_call_args_slot: Option<StackSlot>,
 }
 
 #[derive(Copy, Clone)]
@@ -189,7 +194,22 @@ impl<'a> EmitCtx<'a> {
             pos: 0,
             regs,
             safe_cast_slot: None,
+            trap_depth: 0,
+            trap_ctx_slots: Vec::new(),
+            dyn_call_args_slot: None,
         }
+    }
+
+    fn get_dyn_call_args_slot(&mut self) -> StackSlot {
+        *self.dyn_call_args_slot.get_or_insert_with(|| {
+            let size = (self.isa.pointer_bytes() as u32) * (MAX_DYN_CALL_ARGS as u32);
+            let align_shift = self.isa.pointer_bytes().ilog2() as u8;
+            self.builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                align_shift,
+            ))
+        })
     }
 
     // TODO: only spill regs to stack that are later used with ORef
@@ -558,12 +578,10 @@ impl<'a> EmitCtx<'a> {
                 OpCode::CallClosure { dst, closure, args } => {
                     match self.reg_type(closure) {
                         HLType::Dynamic => {
-                            let slot_size = self.isa.pointer_bytes() as u32 * args.len() as u32;
-                            let args_slot = self.create_sized_stack_slot(StackSlotData::new(
-                                StackSlotKind::ExplicitSlot,
-                                slot_size,
-                                3,
-                            ));
+                            if args.len() > MAX_DYN_CALL_ARGS {
+                                panic!("too many args for OpCode::CallClosure");
+                            }
+                            let args_slot = self.get_dyn_call_args_slot();
                             for (pos, arg) in args.iter().enumerate() {
                                 assert!(self.reg_type(arg).is_dynamic());
                                 let val = self.load_reg(arg);
@@ -930,11 +948,11 @@ impl<'a> EmitCtx<'a> {
                     let slot = match self.regs[val].0 {
                         RegStorage::Stack(slot) => slot,
                         RegStorage::Var(var) => {
-                            let slot = self.safe_cast_slot.unwrap_or_else(|| {
-                                self.create_sized_stack_slot(StackSlotData::new(
+                            let slot = *self.safe_cast_slot.get_or_insert_with(|| {
+                                self.builder.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
                                     8,
-                                    3,
+                                    8_i32.ilog2() as u8,
                                 ))
                             });
                             let val = self.use_var(var);
@@ -1026,12 +1044,18 @@ impl<'a> EmitCtx<'a> {
                     //          goto label;
                     //      }
                     //  }
+                    let current_trap_depth = self.trap_depth;
+                    if self.trap_ctx_slots.len() < current_trap_depth + 1 {
+                        let slot = self.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            size_of::<hl_trap_ctx>() as u32,
+                            3,
+                        ));
+                        self.trap_ctx_slots.push(slot);
+                    }
+                    let slot = self.trap_ctx_slots[current_trap_depth];
+                    self.trap_depth += 1;
 
-                    let slot = self.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        size_of::<hl_trap_ctx>() as u32,
-                        3,
-                    ));
                     let zero = self.ins().iconst(types::I64, 0);
                     self.ins()
                         .stack_store(zero, slot, offset_of!(hl_trap_ctx, tcheck) as i32);
@@ -1114,6 +1138,7 @@ impl<'a> EmitCtx<'a> {
                         tinf,
                         offset_of!(hl_thread_info, trap_current) as i32,
                     );
+                    self.trap_depth = self.trap_depth.saturating_sub(1);
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
@@ -2111,11 +2136,7 @@ impl<'a> EmitCtx<'a> {
                     },
                     |this| {
                         let pointer_bytes = this.isa.pointer_bytes() as u32;
-                        let stack_slot = this.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            pointer_bytes * args.len() as u32,
-                            4,
-                        ));
+                        let stack_slot = this.get_dyn_call_args_slot();
                         let obj_val = this.ins().load(
                             types::I64,
                             MemFlags::new(),
@@ -2179,7 +2200,7 @@ impl<'a> EmitCtx<'a> {
                                 let slot = this.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
                                     size_of::<vdynamic>() as u32,
-                                    3,
+                                    align_of::<vdynamic>().ilog2() as u8,
                                 ));
                                 (this.ins().stack_addr(types::I64, slot, 0), Some(slot))
                             }
