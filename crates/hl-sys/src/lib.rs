@@ -132,13 +132,13 @@ impl Global {
     }
 }
 
-type StaticCallCallback = extern "C-unwind" fn(
-    fun: *const c_void,
+type StaticCallCallback = extern "C" fn(
+    fun: *mut c_void,
     ft_ptr: *mut sys::hl_type,
-    args: *const *const c_void,
+    args: *mut *mut c_void,
     out: *mut sys::vdynamic,
 ) -> *mut c_void;
-type GetWrapperCallback = extern "C" fn(t: *mut hl_type) -> *const c_void;
+type GetWrapperCallback = extern "C" fn(t: *mut hl_type) -> *mut c_void;
 
 type ResolveSymbolCallback =
     extern "C" fn(addr: *mut c_void, out: *mut u16, out_size: *mut c_int) -> *mut u16;
@@ -202,17 +202,23 @@ impl<'a> GlobalBuilder<'a> {
         unsafe {
             sys::hl_global_init();
         }
+        #[cfg(windows)]
+        #[link(name = "libhl")]
+        unsafe extern "C" {
+            unsafe static mut hl_setup: sys::hl_setup_t;
+        }
+        #[cfg(not(windows))]
+        use sys::hl_setup;
         if let Some((static_call, get_wrapper)) = self.callbacks {
             unsafe {
-                sys::hl_setup_callbacks(static_call as *mut c_void, get_wrapper as *mut c_void);
+                hl_setup.static_call = Some(static_call);
+                hl_setup.get_wrapper = Some(get_wrapper);
             }
         }
         if let Some((resolve_symbol, capture_stack)) = self.exception_callbacks {
             unsafe {
-                sys::hl_setup_exception(
-                    resolve_symbol as *mut c_void,
-                    capture_stack as *mut c_void,
-                );
+                hl_setup.resolve_symbol = Some(resolve_symbol);
+                hl_setup.capture_stack = Some(capture_stack);
             }
         }
 
@@ -224,14 +230,13 @@ impl<'a> GlobalBuilder<'a> {
             .collect::<Vec<PStr>>()
             .leak();
         unsafe {
-            sys::hl_sys_init(
-                args.as_mut_ptr().cast(),
-                args.len().try_into().unwrap(),
-                c_file
-                    .unwrap_or(core::ptr::null_mut())
-                    .cast::<c_void>()
-                    .cast_mut(),
-            )
+            hl_setup.sys_args = args.as_mut_ptr().cast();
+            hl_setup.sys_nargs = args.len().try_into().unwrap();
+            hl_setup.file_path = c_file
+                .unwrap_or(core::ptr::null_mut())
+                .cast::<sys::pchar>()
+                .cast_mut();
+            sys::hl_sys_init();
         }
         GlobalHandle(PhantomData)
     }

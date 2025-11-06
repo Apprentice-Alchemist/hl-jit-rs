@@ -79,10 +79,10 @@ impl CallInfo {
 }
 
 #[unsafe(export_name = "hlc_static_call")]
-pub extern "C-unwind" fn static_call(
-    fun: *const c_void,
+pub extern "C" fn static_call(
+    fun: *mut c_void,
     ft_ptr: *mut hl_sys::hl_type,
-    args: *const *const c_void,
+    args: *mut *mut c_void,
     out: *mut hl_sys::vdynamic,
 ) -> *mut c_void {
     let mut info = CallInfo::default();
@@ -206,8 +206,8 @@ pub extern "C-unwind" fn static_call(
 }
 
 #[unsafe(export_name = "hlc_get_wrapper")]
-pub extern "C" fn get_wrapper(_t: *mut hl_type) -> *const c_void {
-    wrapper_call_impl as *const c_void
+pub extern "C" fn get_wrapper(_t: *mut hl_type) -> *mut c_void {
+    wrapper_call_impl as *mut c_void
 }
 
 #[repr(C)]
