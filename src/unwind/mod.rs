@@ -11,13 +11,13 @@ pub(crate) use module::UnwindModule;
 use std::collections::HashMap;
 
 use cranelift::codegen::Context;
+use cranelift::codegen::gimli::RunTimeEndian;
+use cranelift::codegen::gimli::write::{CieId, EhFrame, FrameTable, Section};
 use cranelift::codegen::ir::Endianness;
 use cranelift::codegen::isa::TargetIsa;
 use cranelift::codegen::isa::unwind::UnwindInfo;
 use cranelift::module::FuncId;
 use cranelift::object::ObjectProduct;
-use cranelift::codegen::gimli::RunTimeEndian;
-use cranelift::codegen::gimli::write::{CieId, EhFrame, FrameTable, Section};
 
 use emit::address_for_func;
 use object::WriteDebugInfo;
@@ -160,20 +160,24 @@ impl UnwindContext {
         {
             // On macOS, `__register_frame` takes a pointer to a single FDE
             let start = eh_frame.as_ptr();
-            let end = start.add(eh_frame.len());
+            let end = unsafe { start.add(eh_frame.len()) };
             let mut current = start;
 
             // Walk all of the entries in the frame table and register them
             while current < end {
-                let len = std::ptr::read::<u32>(current as *const u32) as usize;
+                let len = unsafe { std::ptr::read::<u32>(current as *const u32) } as usize;
 
                 // Skip over the CIE
                 if current != start {
-                    __register_frame(current);
+                    unsafe {
+                        __register_frame(current);
+                    }
                 }
 
                 // Move to the next table entry (+4 because the length itself is not inclusive)
-                current = current.add(len + 4);
+                unsafe {
+                    current = current.add(len + 4);
+                }
             }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
