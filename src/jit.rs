@@ -8,7 +8,7 @@ use crate::codegen::CodegenCtx;
 
 pub fn compile_module(code: crate::code::Code) -> (JITModule, FuncId) {
     let mut jit_b = JITBuilder::with_flags(
-        &[("enable_verifier", "false"), ("opt_level", "none")],
+        &[("enable_verifier", "true"), ("opt_level", "speed")],
         cranelift::module::default_libcall_names(),
     )
     .unwrap();

@@ -1,9 +1,6 @@
 use std::alloc::Layout;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem::offset_of;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
 
 use cranelift::codegen::Context;
 use cranelift::codegen::ir;

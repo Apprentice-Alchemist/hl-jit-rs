@@ -103,6 +103,7 @@ struct EmitCtx<'a> {
     safe_cast_slot: Option<StackSlot>,
     trap_depth: usize,
     trap_ctx_slots: Vec<StackSlot>,
+    trap_handler_blocks: Vec<Block>,
     dyn_call_args_slot: Option<StackSlot>,
 }
 
@@ -148,11 +149,11 @@ impl<'a> EmitCtx<'a> {
                 regs.insert(
                     Reg(idx),
                     (
-                        if true {
+                        if *_needs_stack {
                             RegStorage::Stack(builder.create_sized_stack_slot(StackSlotData {
                                 kind: StackSlotKind::ExplicitSlot,
                                 size: t.bytes(),
-                                align_shift: 0,
+                                align_shift: t.bytes().next_power_of_two().ilog2() as u8,
                             }))
                         } else {
                             let v = builder.declare_var(t);
@@ -197,6 +198,7 @@ impl<'a> EmitCtx<'a> {
             trap_depth: 0,
             trap_ctx_slots: Vec::new(),
             dyn_call_args_slot: None,
+            trap_handler_blocks: Vec::new(),
         }
     }
 
@@ -592,8 +594,7 @@ impl<'a> EmitCtx<'a> {
                             let args_val = self.ins().stack_addr(types::I64, args_slot, 0);
                             let args_count_val = self.ins().iconst(types::I32, args.len() as i64);
                             let inst = self
-                                .ins()
-                                .call(dyn_call_ref, &[closure_val, args_val, args_count_val]);
+                                .try_call(dyn_call_ref, &[closure_val, args_val, args_count_val]);
                             if !self.reg_type(dst).is_void() {
                                 let stack_slot = self.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
@@ -656,7 +657,7 @@ impl<'a> EmitCtx<'a> {
                                         }
                                     }));
                                     let sig_ref = ecx.import_signature(sig);
-                                    let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                                    let i = ecx.try_call_indirect(sig_ref, fun_ptr, &vargs);
                                     if !ecx.reg_type(dst).is_void() {
                                         ecx.store_reg(dst, ecx.builder.inst_results(i)[0]);
                                     }
@@ -681,7 +682,7 @@ impl<'a> EmitCtx<'a> {
                                         }
                                     }));
                                     let sig_ref = ecx.import_signature(sig);
-                                    let i = ecx.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                                    let i = ecx.try_call_indirect(sig_ref, fun_ptr, &vargs);
                                     if !ecx.reg_type(dst).is_void() {
                                         ecx.store_reg(dst, ecx.builder.inst_results(i)[0]);
                                     }
@@ -710,7 +711,7 @@ impl<'a> EmitCtx<'a> {
                     );
                     let func_addr = self.ins().func_addr(types::I64, func_ref);
                     let obj_val = self.load_reg(obj);
-                    let inst = self.ins().call(alloc_ref, &[ty_val, func_addr, obj_val]);
+                    let inst = self.try_call(alloc_ref, &[ty_val, func_addr, obj_val]);
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
                 OpCode::VirtualClosure { dst, obj, idx } => {
@@ -744,9 +745,7 @@ impl<'a> EmitCtx<'a> {
                     let alloc_closure_ref = self.native_fun("hl_alloc_closure_ptr");
 
                     let ty_val = self.type_val(ty);
-                    let inst = self
-                        .ins()
-                        .call(alloc_closure_ref, &[ty_val, fun_addr, obj_val]);
+                    let inst = self.try_call(alloc_closure_ref, &[ty_val, fun_addr, obj_val]);
                     self.store_reg(dst, self.inst_results(inst)[0]);
                 }
                 OpCode::GetGlobal { dst, idx } => {
@@ -867,6 +866,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::ToDyn { dst, val } => match self.reg_type(val) {
                     HLType::Boolean => {
+                        // hl_alloc_dynbool does not throw
                         let func_ref = self.native_fun("hl_alloc_dynbool");
                         let val = self.load_reg(val);
                         let inst = self.ins().call(func_ref, &[val]);
@@ -878,7 +878,7 @@ impl<'a> EmitCtx<'a> {
                         let emit_alloc_dynamic = |ecx: &mut EmitCtx<'_>| {
                             let func_ref = ecx.native_fun("hl_alloc_dynamic");
                             let clir_ty = ecx.reg_type_val(*val);
-                            let inst = ecx.ins().call(func_ref, &[clir_ty]);
+                            let inst = ecx.try_call(func_ref, &[clir_ty]);
                             let dyn_val = ecx.inst_results(inst)[0];
                             ecx.ins().store(
                                 MemFlags::new(),
@@ -974,7 +974,7 @@ impl<'a> EmitCtx<'a> {
                     let ty_val = self.reg_type_val(*dst);
 
                     let f = self.native_fun("hl_to_virtual");
-                    let inst = self.ins().call(f, &[ty_val, val]);
+                    let inst = self.try_call(f, &[ty_val, val]);
                     self.store_reg(dst, self.builder.inst_results(inst)[0]);
                 }
                 OpCode::Label => {
@@ -998,7 +998,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Throw(reg) => {
                     let val = self.load_reg(reg);
                     let f = self.native_fun("hl_throw");
-                    self.ins().call(f, &[val]);
+                    self.try_call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                     let b = self.next_block();
                     self.switch_to_block(b);
@@ -1006,7 +1006,7 @@ impl<'a> EmitCtx<'a> {
                 OpCode::Rethrow(reg) => {
                     let val = self.load_reg(reg);
                     let f = self.native_fun("hl_rethrow");
-                    self.ins().call(f, &[val]);
+                    self.try_call(f, &[val]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                     let b = self.next_block();
                     self.switch_to_block(b);
@@ -1029,7 +1029,7 @@ impl<'a> EmitCtx<'a> {
                     self.ins().brif(val, next_block, &[], null_block, &[]);
                     self.switch_to_block(null_block);
                     let na = self.native_fun("hl_null_access");
-                    self.ins().call(na, &[]);
+                    self.try_call(na, &[]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                     self.switch_to_block(next_block);
                 }
@@ -1097,7 +1097,6 @@ impl<'a> EmitCtx<'a> {
                     let setjmp_inst = self.ins().call(setjmp_ref, &[env]);
                     let r = self.inst_results(setjmp_inst)[0];
                     self.ins().brif(r, exc_block, &[], next_block, &[]);
-
                     self.switch_to_block(exc_block);
                     let exc_value = self.ins().load(
                         types::I64,
@@ -1109,8 +1108,8 @@ impl<'a> EmitCtx<'a> {
 
                     let catch_block = self.block_for_offset(jump_off);
                     self.ins().jump(catch_block, &[]);
-                    self.seal_block(exc_block);
 
+                    self.trap_handler_blocks.push(exc_block);
                     self.switch_to_block(next_block);
                 }
                 OpCode::EndTrap { something: _ } => {
@@ -1139,6 +1138,7 @@ impl<'a> EmitCtx<'a> {
                         offset_of!(hl_thread_info, trap_current) as i32,
                     );
                     self.trap_depth = self.trap_depth.saturating_sub(1);
+                    self.trap_handler_blocks.pop();
                 }
                 OpCode::GetI8 { dst, mem, offset } => {
                     let mem = self.load_reg(mem);
@@ -1278,18 +1278,18 @@ impl<'a> EmitCtx<'a> {
                     HLType::Object(_) | HLType::Struct(_) => {
                         let val = self.reg_type_val(*dst);
                         let func_ref = self.native_fun("hl_alloc_obj");
-                        let inst = self.ins().call(func_ref, &[val]);
+                        let inst = self.try_call(func_ref, &[val]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Dynobj => {
                         let func_ref = self.native_fun("hl_alloc_dynobj");
-                        let inst = self.ins().call(func_ref, &[]);
+                        let inst = self.try_call(func_ref, &[]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     HLType::Virtual(_) => {
                         let val = self.reg_type_val(*dst);
                         let func_ref = self.native_fun("hl_alloc_virtual");
-                        let inst = self.ins().call(func_ref, &[val]);
+                        let inst = self.try_call(func_ref, &[val]);
                         self.store_reg(dst, self.builder.inst_results(inst)[0]);
                     }
                     _ => panic!("invalid ONew"),
@@ -1360,7 +1360,7 @@ impl<'a> EmitCtx<'a> {
                     let alloc_ref = self.native_fun("hl_alloc_enum");
                     let ty_val = self.reg_type_val(*dst);
                     let idx_val = self.ins().iconst(types::I32, construct_idx.0 as i64);
-                    let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
+                    let inst = self.try_call(alloc_ref, &[ty_val, idx_val]);
                     let enum_val = self.builder.inst_results(inst)[0];
                     for (pos, param) in params.iter().enumerate() {
                         let offset =
@@ -1375,7 +1375,7 @@ impl<'a> EmitCtx<'a> {
                     let alloc_ref = self.native_fun("hl_alloc_enum");
                     let ty_val = self.reg_type_val(*dst);
                     let idx_val = self.ins().iconst(types::I32, idx.0 as i64);
-                    let inst = self.ins().call(alloc_ref, &[ty_val, idx_val]);
+                    let inst = self.try_call(alloc_ref, &[ty_val, idx_val]);
                     self.store_reg(dst, self.builder.inst_results(inst)[0]);
                 }
                 OpCode::EnumIndex { dst, val } => {
@@ -1419,7 +1419,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Assert => {
                     let f = self.native_fun("hl_assert");
-                    self.ins().call(f, &[]);
+                    self.try_call(f, &[]);
                     self.ins().trap(TrapCode::unwrap_user(1)); // terminate block
                     let b = self.next_block();
                     self.switch_to_block(b);
@@ -1580,7 +1580,7 @@ impl<'a> EmitCtx<'a> {
             .iter()
             .map(|r| self.load_reg(r))
             .collect::<Vec<Value>>();
-        let i = self.ins().call(f_ref, args);
+        let i = self.try_call(f_ref, args);
         if !self.reg_type(dst).is_void() {
             self.store_reg(dst, self.builder.inst_results(i)[0]);
         }
@@ -1598,12 +1598,12 @@ impl<'a> EmitCtx<'a> {
         let inst = match self.reg_type(dst) {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => {
                 let ty = self.type_val(val_ty);
-                self.ins().call(cast_ref, &[val_addr, ty])
+                self.try_call(cast_ref, &[val_addr, ty])
             }
             _ => {
                 let src_ty = self.type_val(val_ty);
                 let dst_ty = self.reg_type_val(*dst);
-                self.ins().call(cast_ref, &[val_addr, src_ty, dst_ty])
+                self.try_call(cast_ref, &[val_addr, src_ty, dst_ty])
             }
         };
         let dst_val = self.inst_results(inst)[0];
@@ -1633,12 +1633,11 @@ impl<'a> EmitCtx<'a> {
 
         let inst = match &self.code[self.fun[*dst]] {
             HLType::Float32 | HLType::Float64 | HLType::Int64 => {
-                self.ins().call(dyn_get_ref, &[obj_val, field_hash])
+                self.try_call(dyn_get_ref, &[obj_val, field_hash])
             }
             _ => {
                 let dst_ty_val = self.reg_type_val(*dst);
-                self.ins()
-                    .call(dyn_get_ref, &[obj_val, field_hash, dst_ty_val])
+                self.try_call(dyn_get_ref, &[obj_val, field_hash, dst_ty_val])
             }
         };
         let dst_val = self.inst_results(inst)[0];
@@ -1664,7 +1663,7 @@ impl<'a> EmitCtx<'a> {
             declare_data_in_func(field_name_data_id, true, self.builder.func);
         let field_name_value = self.ins().global_value(types::I64, field_name_global_value);
         let hash_ref = self.native_fun("hl_hash");
-        let hash_inst = self.ins().call(hash_ref, &[field_name_value]);
+        let hash_inst = self.try_call(hash_ref, &[field_name_value]);
         self.builder.inst_results(hash_inst)[0]
     }
 
@@ -1699,13 +1698,12 @@ impl<'a> EmitCtx<'a> {
         };
 
         match &self.code[self.fun[*val]] {
-            HLType::Float32 | HLType::Float64 | HLType::Int64 => self
-                .ins()
-                .call(dyn_set_ref, &[obj_val, field_hash, val_val]),
+            HLType::Float32 | HLType::Float64 | HLType::Int64 => {
+                self.try_call(dyn_set_ref, &[obj_val, field_hash, val_val])
+            }
             _ => {
                 let val_ty = self.reg_type_val(*val);
-                self.ins()
-                    .call(dyn_set_ref, &[obj_val, field_hash, val_ty, val_val])
+                self.try_call(dyn_set_ref, &[obj_val, field_hash, val_ty, val_val])
             }
         };
     }
@@ -1742,6 +1740,46 @@ impl<'a> EmitCtx<'a> {
 
     pub fn next_block(&mut self) -> Block {
         self.ensure_block(self.pos + 1)
+    }
+
+    pub fn try_call(&mut self, fun_ref: FuncRef, args: &[Value]) -> ir::Inst {
+        if self.trap_depth > 0 {
+            let slot = self.trap_ctx_slots[self.trap_depth - 1];
+            let env = self
+                .ins()
+                .stack_addr(types::I64, slot, offset_of!(hl_trap_ctx, buf) as i32);
+            let next_block = self.create_block();
+            let exc_block = self.trap_handler_blocks[self.trap_depth - 1];
+
+            let setjmp_ref = self.native_fun("setjmp");
+            let setjmp_inst = self.ins().call(setjmp_ref, &[env]);
+            let r = self.inst_results(setjmp_inst)[0];
+            self.ins().brif(r, exc_block, &[], next_block, &[]);
+            self.switch_to_block(next_block);
+        }
+        self.ins().call(fun_ref, args)
+    }
+    pub fn try_call_indirect(
+        &mut self,
+        sig: ir::SigRef,
+        callee: Value,
+        args: &[Value],
+    ) -> ir::Inst {
+        if self.trap_depth > 0 {
+            let slot = self.trap_ctx_slots[self.trap_depth - 1];
+            let env = self
+                .ins()
+                .stack_addr(types::I64, slot, offset_of!(hl_trap_ctx, buf) as i32);
+            let next_block = self.create_block();
+            let exc_block = self.trap_handler_blocks[self.trap_depth - 1];
+
+            let setjmp_ref = self.native_fun("setjmp");
+            let setjmp_inst = self.ins().call(setjmp_ref, &[env]);
+            let r = self.inst_results(setjmp_inst)[0];
+            self.ins().brif(r, exc_block, &[], next_block, &[]);
+            self.switch_to_block(next_block);
+        }
+        self.ins().call_indirect(sig, callee, args)
     }
 
     pub fn emit_jump(
@@ -1801,7 +1839,7 @@ impl<'a> EmitCtx<'a> {
                         false,
                         self.builder.func,
                     );
-                    let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
+                    let inst = self.try_call(f_ref, &[a_val_orig, b_val_orig]);
                     let cmp_val = self.inst_results(inst)[0];
                     let val = self.ins().icmp_imm(int_cc, cmp_val, 0);
                     self.ins()
@@ -1815,7 +1853,7 @@ impl<'a> EmitCtx<'a> {
             (HLType::Dynamic | HLType::Function(_), _)
             | (_, HLType::Dynamic | HLType::Function(_)) => {
                 let f_ref = self.native_fun("hl_dyn_compare");
-                let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
+                let inst = self.try_call(f_ref, &[a_val_orig, b_val_orig]);
                 let ret = self.inst_results(inst)[0];
                 let mut val = self.ins().icmp_imm(int_cc, ret, 0);
                 if matches!(
@@ -1831,6 +1869,7 @@ impl<'a> EmitCtx<'a> {
                 return;
             }
             (HLType::Type, HLType::Type) => {
+                // hl_same_type does not throw
                 let f_ref = self.native_fun("hl_same_type");
                 let inst = self.ins().call(f_ref, &[a_val_orig, b_val_orig]);
                 let ret = self.inst_results(inst)[0];
@@ -2088,7 +2127,7 @@ impl<'a> EmitCtx<'a> {
                     self.fun[*dst],
                 );
                 let sig_ref = self.import_signature(sig);
-                let i = self.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                let i = self.try_call_indirect(sig_ref, fun_ptr, &vargs);
                 if !self.reg_type(dst).is_void() {
                     self.store_reg(dst, self.builder.inst_results(i)[0]);
                 }
@@ -2129,7 +2168,7 @@ impl<'a> EmitCtx<'a> {
                         vargs.push(obj_val);
                         vargs.extend(args.iter().map(|r| this.load_reg(r)));
                         let sig_ref = this.import_signature(sig);
-                        let i = this.ins().call_indirect(sig_ref, fun_ptr, &vargs);
+                        let i = this.try_call_indirect(sig_ref, fun_ptr, &vargs);
                         if !this.reg_type(dst).is_void() {
                             this.store_reg(dst, this.builder.inst_results(i)[0]);
                         }
@@ -2205,7 +2244,7 @@ impl<'a> EmitCtx<'a> {
                                 (this.ins().stack_addr(types::I64, slot, 0), Some(slot))
                             }
                         };
-                        let inst = this.ins().call(f_ref, &[obj_val, ft, hash_val, args, ret]);
+                        let inst = this.try_call(f_ref, &[obj_val, ft, hash_val, args, ret]);
                         let ret_val = this.inst_results(inst)[0];
                         if dst_type.is_ptr() {
                             this.store_reg(dst, ret_val);
