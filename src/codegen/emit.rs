@@ -304,7 +304,7 @@ impl<'a> EmitCtx<'a> {
                 }
                 OpCode::Int { dst, idx } => {
                     let val = match self.reg_type(dst) {
-                        HLType::Int64 => self
+                        HLType::Int64 | HLType::Guid => self
                             .builder
                             .ins()
                             .iconst(types::I64, self.code.ints[idx.0 as usize] as i64),
@@ -604,11 +604,7 @@ impl<'a> EmitCtx<'a> {
                                 let result = self.inst_results(inst)[0];
                                 self.ins().stack_store(result, stack_slot, 0);
                                 let val_addr = self.ins().stack_addr(types::I64, stack_slot, 0);
-                                assert!(
-                                    matches!(self.code[TypeIdx(9)], HLType::Dynamic),
-                                    "HDynamic does not have index 9"
-                                );
-                                self.emit_dyn_cast(dst, TypeIdx(9), val_addr);
+                                self.emit_dyn_cast(dst, self.idxs.hdyn_index.unwrap(), val_addr);
                             }
                         }
                         _ => {

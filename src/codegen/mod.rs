@@ -41,6 +41,7 @@ struct Indexes {
     static_closures: BTreeMap<FunIdx, DataId>,
     obj_layouts: BTreeMap<TypeIdx, ObjLayout>,
     enum_layouts: BTreeMap<TypeIdx, EnumLayout>,
+    hdyn_index: Option<TypeIdx>,
 }
 
 pub static LIBHL_NATIVE_CALLS: &[(&str, &[Type], &[Type])] = &[
@@ -182,11 +183,15 @@ impl<'a, T: Module> CodegenCtx<'a, T> {
             static_closures: Default::default(),
             obj_layouts: Default::default(),
             enum_layouts: Default::default(),
+            hdyn_index: None
         };
         Self { m, idxs }
     }
 
     pub fn compile(&mut self, code: &Code, generate_main: bool) -> FuncId {
+        self.idxs.hdyn_index = Some(TypeIdx(code.types.iter().enumerate().find(|(_, ty) | {
+            matches!(ty, HLType::Dynamic)
+        }).expect("missing type HDyn").0));
         data::declare(self.m, &code, &mut self.idxs).unwrap();
         build_native_calls(self.m, &mut self.idxs);
         data::define_types(self.m, &code, &mut self.idxs).unwrap();
