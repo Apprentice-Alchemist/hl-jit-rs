@@ -460,8 +460,8 @@ impl<'a> EmitCtx<'a> {
                         let i = self.ins().call(f, &[a, b]);
                         self.store_reg(dst, self.builder.inst_results(i)[0]);
                     } else {
-                        let a = self.load_reg(a);
-                        let b = self.load_reg(b);
+                        let val_a = self.load_reg(a);
+                        let val_b = self.load_reg(b);
                         let next_block = self.next_block();
 
                         let rem_block = self.create_block();
@@ -471,14 +471,18 @@ impl<'a> EmitCtx<'a> {
                         let check_neg_one_block = self.create_block();
 
                         self.ins()
-                            .brif(b, check_neg_one_block, &[], zero_block, &[]);
+                            .brif(val_b, check_neg_one_block, &[], zero_block, &[]);
                         self.seal_block(check_neg_one_block);
                         self.switch_to_block(check_neg_one_block);
-                        let val = self.ins().icmp_imm(IntCC::NotEqual, b, -1);
+                        let val = self.ins().icmp_imm(IntCC::NotEqual, val_b, -1);
                         self.ins().brif(val, rem_block, &[], zero_block, &[]);
                         self.seal_block(rem_block);
                         self.switch_to_block(rem_block);
-                        let val = self.ins().srem(a, b);
+                        let val = if self.reg_type(a).is_unsigned() {
+                            self.ins().urem(val_a, val_b)
+                        } else {
+                            self.ins().srem(val_a, val_b)
+                        };
                         self.store_reg(dst, val);
                         self.ins().jump(next_block, &[]);
                         self.seal_block(zero_block);
@@ -903,12 +907,15 @@ impl<'a> EmitCtx<'a> {
                 OpCode::ToSFloat { dst, val } => {
                     let src_ty = self.reg_cl_ty(val);
                     let dst_ty = self.reg_cl_ty(dst);
-                    let val = self.load_reg(val);
+                    let val_val = self.load_reg(val);
                     let val = match (src_ty, dst_ty) {
-                        (types::F32, types::F64) => self.ins().fpromote(types::F64, val),
-                        (types::F64, types::F32) => self.ins().fdemote(types::F32, val),
+                        (types::F32, types::F64) => self.ins().fpromote(types::F64, val_val),
+                        (types::F64, types::F32) => self.ins().fdemote(types::F32, val_val),
+                        (_a, b) if self.reg_type(val).is_unsigned() && b.is_float() => {
+                            self.ins().fcvt_from_uint(dst_ty, val_val)
+                        }
                         (a, b) if a.is_int() && b.is_float() => {
-                            self.ins().fcvt_from_sint(dst_ty, val)
+                            self.ins().fcvt_from_sint(dst_ty, val_val)
                         }
                         _ => panic!("Invalid OToSFloat"),
                     };
@@ -923,19 +930,28 @@ impl<'a> EmitCtx<'a> {
                 OpCode::ToInt { dst, val } => {
                     let src_ty = self.reg_cl_ty(val);
                     let dst_ty = self.reg_cl_ty(dst);
-                    let val = self.load_reg(val);
+                    let src_val = self.load_reg(val);
                     let val = if src_ty.is_int() && dst_ty.is_int() {
                         match src_ty.bits().cmp(&dst_ty.bits()) {
-                            std::cmp::Ordering::Greater => self.ins().ireduce(dst_ty, val),
-                            std::cmp::Ordering::Less => self.ins().sextend(dst_ty, val),
-                            std::cmp::Ordering::Equal => val,
+                            std::cmp::Ordering::Greater => self.ins().ireduce(dst_ty, src_val),
+                            std::cmp::Ordering::Less => 
+                                if self.code[self.fun[*val]].is_unsigned() {
+                                    self.ins().uextend(dst_ty, src_val)
+                                } else {
+                                    self.ins().sextend(dst_ty, src_val)
+                                }
+                            std::cmp::Ordering::Equal => src_val,
                         }
                     } else {
                         if dst_ty.bytes() < 4 {
-                            let val = self.ins().fcvt_to_sint_sat(types::I32, val);
+                            let val = if self.reg_type(dst).is_unsigned() {
+                                self.ins().fcvt_to_sint_sat(types::I32, src_val)
+                            } else {
+                                self.ins().fcvt_to_uint_sat(types::I32, src_val)
+                            };
                             self.ins().ireduce(dst_ty, val)
                         } else {
-                            self.ins().fcvt_to_sint_sat(dst_ty, val)
+                            self.ins().fcvt_to_sint_sat(dst_ty, src_val)
                         }
                     };
                     self.store_reg(dst, val);

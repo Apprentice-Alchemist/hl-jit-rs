@@ -170,8 +170,7 @@ impl HLType {
             | Self::Null(_)
             | Self::Method(_)
             | Self::Struct(_)
-            | Self::Packed(_)
-            | Self::Guid => true,
+            | Self::Packed(_) => true,
             Self::Void
             | Self::UInt8
             | Self::UInt16
@@ -179,8 +178,13 @@ impl HLType {
             | Self::Int64
             | Self::Float32
             | Self::Float64
-            | Self::Boolean => false,
+            | Self::Boolean 
+            | Self::Guid => false,
         }
+    }
+
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, Self::UInt8 | Self::UInt16)
     }
 }
 
