@@ -14,6 +14,8 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      EXE_SUFFIX: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
     steps:
     - uses: actions/checkout@v4
     - name: Update Rust
@@ -28,3 +30,43 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ runner.os }}${{ runner.os == 'Linux' && runner.arch == 'ARM64' && '-arm64' || '' }}-binary
+        path: target/debug/hl-jit${{ env.EXE_SUFFIX }}
+
+  haxe-test-suite:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      EXE_SUFFIX: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/setup-hashlink
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ runner.os }}${{ runner.os == 'Linux' && runner.arch == 'ARM64' && '-arm64' || '' }}-binary
+        path: binary
+    - name: Install binary
+      run: |
+        mv binary/hl-jit${{ env.EXE_SUFFIX }} binary/hl${{ env.EXE_SUFFIX }}
+        chmod +x binary/hl${{ env.EXE_SUFFIX }}
+        echo $PWD/binary >> $GITHUB_PATH
+    - name: Check binary
+      run: hl --version
+    - uses: Apprentice-Alchemist/setup-haxe@9623def59695242d7d82382bc44bee999be065bc
+      with:
+        haxe-version: latest
+    - uses: actions/checkout@v4
+      with:
+        repository: HaxeFoundation/haxe
+        path: haxe
+    - name: Test
+      run: haxe --run RunCi hl --skip-hlc
+      working-directory: haxe/tests
