@@ -17,12 +17,13 @@ pub fn create_import_library(isa: &dyn TargetIsa, name: &str, symbols: &[String]
             name: name.clone(),
             ext_name: None,
             symbol_name: None,
-            alias_target: None,
             ordinal: 0,
             noname: false,
             data: false,
             private: false,
             constant: false,
+            import_name: None,
+            export_as: None,
         })
         .collect();
     let machine = match isa.triple().architecture {
@@ -30,7 +31,15 @@ pub fn create_import_library(isa: &dyn TargetIsa, name: &str, symbols: &[String]
         target_lexicon::Architecture::Aarch64(_) => MachineTypes::ARM64,
         _ => panic!("unsupported architecture for import libraries"),
     };
-    ar_archive_writer::write_import_library(&mut buf, &import_name, &exports, machine, false, true)
-        .unwrap();
+    ar_archive_writer::write_import_library(
+        &mut buf,
+        &import_name,
+        &exports,
+        machine,
+        false,
+        true,
+        &[],
+    )
+    .unwrap();
     buf.into_inner()
 }

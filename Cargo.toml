@@ -19,26 +19,26 @@ libffi = []
 [dependencies]
 backtrace = "0.3.74"
 clap = { version = "4.5.31", features = ["derive"] }
-cranelift = { version = "0.125.0", features = [
+cranelift = { version = "0.126.1", features = [
 	"jit",
 	"module",
 	"native",
 	"object",
 ] }
-cranelift-codegen = { version = "0.125.0", features = ["all-native-arch"] }
-libloading = "0.8.6"
+cranelift-codegen = { version = "0.126.1", features = ["all-native-arch"] }
+libloading = "0.9.0"
 hl-code = { path = "crates/hl-code" }
 hl-sys = { path = "crates/hl-sys" }
 hl-ffi = { path = "crates/hl-ffi", optional = true }
 libc = "0.2.171"
 tempfile = "3.19.0"
 target-lexicon = "0.13.2"
-ar_archive_writer = "0.4.2"
+ar_archive_writer = "0.5.1"
 clap_complete = { version = "4.5.48", features = ["unstable-dynamic"] }
 rayon = "1.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.60.2", features = ["Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_LibraryLoader"] }
 
 [build-dependencies]
 cc = "1.2.16"
