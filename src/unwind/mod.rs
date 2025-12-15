@@ -63,13 +63,13 @@ impl UnwindContext {
         unwind_info: UnwindInfo,
         isa: &dyn TargetIsa,
     ) {
-        if isa.triple().operating_system.is_like_darwin() {
-            // The object crate doesn't currently support DW_GNU_EH_PE_absptr, which macOS
-            // requires for unwinding tables. In addition on arm64 it currently doesn't
-            // support 32bit relocations as we currently use for the unwinding table.
-            // See gimli-rs/object#415 and rust-lang/rustc_codegen_cranelift#1371
-            return;
-        }
+        // if isa.triple().operating_system.is_like_darwin() {
+        //     // The object crate doesn't currently support DW_GNU_EH_PE_absptr, which macOS
+        //     // requires for unwinding tables. In addition on arm64 it currently doesn't
+        //     // support 32bit relocations as we currently use for the unwinding table.
+        //     // See gimli-rs/object#415 and rust-lang/rustc_codegen_cranelift#1371
+        //     return;
+        // }
 
         match unwind_info {
             UnwindInfo::SystemV(unwind_info) => {
