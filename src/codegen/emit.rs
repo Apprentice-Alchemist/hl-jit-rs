@@ -34,6 +34,7 @@ pub(super) fn declare_func_in_func_with_sig(
         name: ir::ExternalName::user(user_name_ref),
         signature,
         colocated: false,
+        patchable: false,
     })
 }
 
@@ -150,11 +151,11 @@ impl<'a> EmitCtx<'a> {
                     Reg(idx),
                     (
                         if *_needs_stack {
-                            RegStorage::Stack(builder.create_sized_stack_slot(StackSlotData {
-                                kind: StackSlotKind::ExplicitSlot,
-                                size: t.bytes(),
-                                align_shift: t.bytes().next_power_of_two().ilog2() as u8,
-                            }))
+                            RegStorage::Stack(builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                t.bytes(),
+                                t.bytes().next_power_of_two().ilog2() as u8,
+                            )))
                         } else {
                             let v = builder.declare_var(t);
                             RegStorage::Var(v)
