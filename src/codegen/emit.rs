@@ -834,22 +834,14 @@ impl<'a> EmitCtx<'a> {
                     b,
                     offset,
                     IntCC::SignedGreaterThanOrEqual,
-                    Some(if cfg!(target_arch = "x86_64") {
-                        FloatCC::UnorderedOrGreaterThanOrEqual
-                    } else {
-                        FloatCC::GreaterThanOrEqual
-                    }),
+                    Some(FloatCC::UnorderedOrGreaterThanOrEqual),
                 ),
                 OpCode::JNotGte { a, b, offset } => self.emit_jump(
                     a,
                     b,
                     offset,
                     IntCC::SignedLessThan,
-                    Some(if cfg!(target_arch = "x86_64") {
-                        FloatCC::UnorderedOrLessThan
-                    } else {
-                        FloatCC::LessThan
-                    }),
+                    Some(FloatCC::UnorderedOrLessThan),
                 ),
                 OpCode::JEq { a, b, offset } => {
                     self.emit_jump(a, b, offset, IntCC::Equal, Some(FloatCC::Equal))
