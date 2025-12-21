@@ -255,9 +255,8 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "cranelift"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b254417719b76aa89d44d0c6d079642ae6598e83a606a49d0451a1554555416"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -269,42 +268,37 @@ dependencies = [
 
 [[package]]
 name = "cranelift-assembler-x64"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c088d3406f0c0252efa7445adfd2d05736bfb5218838f64eaf79d567077aed14"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
 
 [[package]]
 name = "cranelift-assembler-x64-meta"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c03f887a763abb9c1dc08f722aa82b69067fda623b6f0273050f45f8b1a6776"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-srcgen",
 ]
 
 [[package]]
 name = "cranelift-bforest"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0206887a11a43f507fee320a218dc365980bfc42ec2696792079a9f8c9369e90"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-entity",
 ]
 
 [[package]]
 name = "cranelift-bitset"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac0790c83cfdab95709c5d0105fd888221e3af9049a7d7ec376ec901ab4e4dba"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 
 [[package]]
 name = "cranelift-codegen"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a98aed2d262eda69310e84bae8e053ee4f17dbdd3347b8d9156aa618ba2de0a"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -328,9 +322,8 @@ dependencies = [
 
 [[package]]
 name = "cranelift-codegen-meta"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6906852826988563e9b0a9232ad951f53a47aa41ffd02f8ac852d3f41aae836a"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -340,33 +333,29 @@ dependencies = [
 
 [[package]]
 name = "cranelift-codegen-shared"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a50105aab667b5cc845f2be37c78475d7cc127cd8ec0a31f7b2b71d526099a7"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 
 [[package]]
 name = "cranelift-control"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6adcc7aa7c0bc1727176a6f2d99c28a9e79a541ccd5ca911a0cb352da8befa36"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "arbitrary",
 ]
 
 [[package]]
 name = "cranelift-entity"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "981b56af777f9a34ea6dcce93255125776d391410c2a68b75bed5941b714fa15"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-bitset",
 ]
 
 [[package]]
 name = "cranelift-frontend"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea982589684dfb71afecb9fc09555c3a266300a1162a60d7fa39d41a5705b1c"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -376,15 +365,13 @@ dependencies = [
 
 [[package]]
 name = "cranelift-isle"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0422686b22ed6a1f33cc40e3c43eb84b67155788568d1a5cac8439d3dca1783"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 
 [[package]]
 name = "cranelift-jit"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed75b45f61f344d9b5d844637ae59a3c0062b837c718571c9beb5a4a81c56dd9"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -397,14 +384,13 @@ dependencies = [
  "region",
  "target-lexicon",
  "wasmtime-internal-jit-icache-coherence",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "cranelift-module"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36ffd7454a844814b2a49632a5d74a006ad1b01d9983a9697ae070dea4b878a5"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -413,9 +399,8 @@ dependencies = [
 
 [[package]]
 name = "cranelift-native"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56f697bbbe135c655ea1deb7af0bae4a5c4fae2c88fdfc0fa57b34ae58c91040"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -424,9 +409,8 @@ dependencies = [
 
 [[package]]
 name = "cranelift-object"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ff64fc3d3bb0f7fddc4b6f3c6febceed73f69232cc526b6796b6b7b52b13993"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -439,9 +423,8 @@ dependencies = [
 
 [[package]]
 name = "cranelift-srcgen"
-version = "0.125.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "718efe674f3df645462677e22a3128e890d88ba55821bb091083d257707be76c"
+version = "0.128.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 
 [[package]]
 name = "crc32fast"
@@ -1011,21 +994,19 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
-version = "38.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb8e042b6e3de2f3d708279f89f50b4b9aa1b9bab177300cdffb0ffcd2816df5"
+version = "41.0.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "anyhow",
  "cfg-if",
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "wasmtime-internal-math"
-version = "38.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c1f0674f38cd7d014eb1a49ea1d1766cca1a64459e8856ee118a10005302e16"
+version = "41.0.0"
+source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
 dependencies = [
  "libm",
 ]
