@@ -256,7 +256,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 [[package]]
 name = "cranelift"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
@@ -277,7 +277,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64-meta"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-srcgen",
 ]
@@ -285,7 +285,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bforest"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-entity",
 ]
@@ -293,12 +293,12 @@ dependencies = [
 [[package]]
 name = "cranelift-bitset"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 
 [[package]]
 name = "cranelift-codegen"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-meta"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -334,12 +334,12 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-shared"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 
 [[package]]
 name = "cranelift-control"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "arbitrary",
 ]
@@ -347,7 +347,7 @@ dependencies = [
 [[package]]
 name = "cranelift-entity"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-bitset",
 ]
@@ -355,7 +355,7 @@ dependencies = [
 [[package]]
 name = "cranelift-frontend"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-codegen",
  "log",
@@ -366,12 +366,12 @@ dependencies = [
 [[package]]
 name = "cranelift-isle"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 
 [[package]]
 name = "cranelift-jit"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -390,7 +390,7 @@ dependencies = [
 [[package]]
 name = "cranelift-module"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -400,7 +400,7 @@ dependencies = [
 [[package]]
 name = "cranelift-native"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -410,7 +410,7 @@ dependencies = [
 [[package]]
 name = "cranelift-object"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -424,7 +424,7 @@ dependencies = [
 [[package]]
 name = "cranelift-srcgen"
 version = "0.128.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 
 [[package]]
 name = "crc32fast"
@@ -995,7 +995,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
 version = "41.0.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-math"
 version = "41.0.0"
-source = "git+https://github.com/tobil4sk/wasmtime?branch=feature%2Fcranelift-aarch64-fcmp#d8d9df76d9082218f078407fcd00e55968bc7d27"
+source = "git+https://github.com/bytecodealliance/wasmtime?branch=main#c9a764ee5e62af6206dd8d1c7a119020538c5b05"
 dependencies = [
  "libm",
 ]
