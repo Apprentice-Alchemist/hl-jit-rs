@@ -1,0 +1,50 @@
+name: Setup Hashlink
+runs:
+  using: composite
+  steps:
+    - name: Install Hashlink (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release download -R HaxeFoundation/hashlink latest -p '*win64.zip' --output $env:RUNNER_TEMP/hl-win64.zip
+        Expand-Archive -Path $env:RUNNER_TEMP/hl-win64.zip -DestinationPath $env:RUNNER_TEMP
+        $HASHLINK = Get-ChildItem $env:RUNNER_TEMP/hashlink-*-*
+        echo "$HASHLINK" >> $env:GITHUB_PATH
+        echo "HASHLINK=$HASHLINK" >> $env:GITHUB_ENV
+        ls "$HASHLINK"
+        ls "$HASHLINK/include"
+    - name: Install Hashlink (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -eux
+        git clone https://github.com/HaxeFoundation/hashlink
+        cd hashlink
+        brew update
+        brew bundle
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_VM=OFF -DBUILD_TESTING=OFF
+        cmake --build build
+        sudo cmake --install build
+    - name: Install Hashlink (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -eux
+        sudo apt-get update -y
+        sudo apt-get install --no-install-recommends -y \
+              libmbedtls-dev \
+              libopenal-dev \
+              libpng-dev \
+              libsdl2-dev \
+              libturbojpeg-dev \
+              libuv1-dev \
+              libvorbis-dev \
+              libsqlite3-dev \
+              libglu1-mesa-dev
+        git clone https://github.com/HaxeFoundation/hashlink
+        cd hashlink
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_VM=OFF -DBUILD_TESTING=OFF
+        cmake --build build
+        sudo cmake --install build

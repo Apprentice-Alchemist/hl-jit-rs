@@ -14,60 +14,59 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      EXE_SUFFIX: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
     steps:
     - uses: actions/checkout@v4
     - name: Update Rust
       run: rustup update stable
-    - uses: Apprentice-Alchemist/setup-haxe@9623def59695242d7d82382bc44bee999be065bc
+    - uses: tobil4sk/setup-haxe@9d1527c4bb9d1d449d196a0822118692ceeac457
       with:
         haxe-version: latest
-    - name: Install Hashlink (Windows)
-      if: startsWith(matrix.os, 'windows')
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh release download -R HaxeFoundation/hashlink latest -p '*win64.zip' --output $env:RUNNER_TEMP/hl-win64.zip
-        Expand-Archive -Path $env:RUNNER_TEMP/hl-win64.zip -DestinationPath $env:RUNNER_TEMP
-        $HASHLINK = Get-ChildItem $env:RUNNER_TEMP/hashlink-*-*
-        echo "$HASHLINK" >> $env:GITHUB_PATH
-        echo "HASHLINK=$HASHLINK" >> $env:GITHUB_ENV
-        ls "$HASHLINK"
-        ls "$HASHLINK/include"
-    - name: Install Hashlink (macOS)
-      if: startsWith(matrix.os, 'macos')
-      run: |
-        set -eux
-        git clone https://github.com/HaxeFoundation/hashlink
-        cd hashlink
-        brew update
-        brew bundle
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_VM=OFF -DBUILD_TESTING=OFF
-        cmake --build build
-        sudo cmake --install build
-    - name: Install Hashlink (Linux)
-      if: startsWith(matrix.os, 'ubuntu')
-      run: |
-        set -eux
-        sudo apt-get update -y
-        sudo apt-get install --no-install-recommends -y \
-              libmbedtls-dev \
-              libopenal-dev \
-              libpng-dev \
-              libsdl2-dev \
-              libturbojpeg-dev \
-              libuv1-dev \
-              libvorbis-dev \
-              libsqlite3-dev \
-              libglu1-mesa-dev
-        git clone https://github.com/HaxeFoundation/hashlink
-        cd hashlink
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_VM=OFF -DBUILD_TESTING=OFF
-        cmake --build build
-        sudo cmake --install build
+    - uses: ./.github/actions/setup-hashlink
     - name: Build hello.hl
       run: haxe -m HelloWorld -hl tests/hello.hl
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ runner.os }}${{ runner.os == 'Linux' && runner.arch == 'ARM64' && '-arm64' || '' }}-binary
+        path: target/debug/hl-jit${{ env.EXE_SUFFIX }}
+
+  haxe-test-suite:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      EXE_SUFFIX: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/setup-hashlink
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ runner.os }}${{ runner.os == 'Linux' && runner.arch == 'ARM64' && '-arm64' || '' }}-binary
+        path: binary
+    - name: Install binary
+      run: |
+        mv binary/hl-jit${{ env.EXE_SUFFIX }} binary/hl${{ env.EXE_SUFFIX }}
+        chmod +x binary/hl${{ env.EXE_SUFFIX }}
+        echo $PWD/binary >> $GITHUB_PATH
+    - name: Check binary
+      run: hl --version
+    - uses: tobil4sk/setup-haxe@9d1527c4bb9d1d449d196a0822118692ceeac457
+      with:
+        haxe-version: latest
+    - uses: actions/checkout@v4
+      with:
+        repository: HaxeFoundation/haxe
+        path: haxe
+    - name: Test
+      run: haxe --run RunCi hl --skip-hlc
+      working-directory: haxe/tests
